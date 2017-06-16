@@ -1,0 +1,7 @@
+[package]
+name = "rl-tutorial-rs"
+version = "0.1.0"
+authors = ["Gabriel Martinez <reitaka@gmail.com>"]
+
+[dependencies]
+tcod = { git = "https://github.com/mystal/tcod-rs", branch = "update_to_1.6.3" }
