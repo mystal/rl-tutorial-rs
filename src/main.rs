@@ -1,11 +1,35 @@
 extern crate tcod;
 
 use tcod::{colors, BackgroundFlag, Console, RootConsole};
-use tcod::input::KeyCode;
+use tcod::input::{Key, KeyCode};
 
 const SCREEN_WIDTH: i32 = 80;
 const SCREEN_HEIGHT: i32 = 50;
 const LIMIT_FPS: u32 = 20;
+
+struct GameState {
+    player_x: i32,
+    player_y: i32,
+}
+
+impl GameState {
+    fn new() -> Self {
+        GameState {
+            player_x: SCREEN_WIDTH / 2,
+            player_y: SCREEN_HEIGHT / 2,
+        }
+    }
+
+    fn handle_keys(&mut self, key_code: KeyCode) {
+        match key_code {
+            KeyCode::Left => self.player_x -= 1,
+            KeyCode::Right => self.player_x += 1,
+            KeyCode::Up => self.player_y -= 1,
+            KeyCode::Down => self.player_y += 1,
+            _ => {},
+        }
+    }
+}
 
 fn main() {
     let mut root = RootConsole::initializer()
@@ -15,17 +39,22 @@ fn main() {
         .font_type(tcod::FontType::Greyscale)
         .init();
 
-    let mut player_x = 1;
-    let mut player_y = 1;
+    let mut game_state = GameState::new();
 
     while !root.window_closed() {
         root.set_default_foreground(colors::WHITE);
-        root.put_char(player_x, player_y, '@', BackgroundFlag::None);
+        root.put_char(game_state.player_x, game_state.player_y, '@', BackgroundFlag::None);
         root.flush();
 
-        match root.wait_for_keypress(true).code {
-            KeyCode::Escape => break,
-            _ => {},
+        root.put_char(game_state.player_x, game_state.player_y, ' ', BackgroundFlag::None);
+
+        match root.wait_for_keypress(true) {
+            Key { code: KeyCode::Escape, .. } => break,
+            Key { code: KeyCode::Enter, left_alt: true, .. } => {
+                let fullscreen = !root.is_fullscreen();
+                root.set_fullscreen(fullscreen);
+            },
+            Key { code, .. } => game_state.handle_keys(code),
         }
     }
 }
