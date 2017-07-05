@@ -1,3 +1,5 @@
 target/
 **/*.rs.bk
 /precompiled
+
+.DS_Store
