@@ -1,3 +1,4 @@
+extern crate rand;
 extern crate tcod;
 
 use tcod::{BackgroundFlag, Console};
@@ -15,9 +16,6 @@ const SCREEN_WIDTH: i32 = 80;
 const SCREEN_HEIGHT: i32 = 50;
 const LIMIT_FPS: u32 = 20;
 
-const MAP_WIDTH: i32 = 80;
-const MAP_HEIGHT: i32 = 45;
-
 const COLOR_DARK_WALL: Color = Color { r: 0, g: 0, b: 100 };
 const COLOR_DARK_GROUND: Color = Color { r: 50, g: 50, b: 150 };
 
@@ -29,11 +27,12 @@ struct GameState {
 
 impl GameState {
     fn new() -> Self {
-        let player = Object::new(MAP_WIDTH / 2, MAP_HEIGHT / 2, '@', colors::WHITE);
-        let npc = Object::new(MAP_WIDTH / 2 - 5, MAP_HEIGHT / 2, '@', colors::YELLOW);
-        let mut objects = [player, npc];
+        let (map, player_position) = map::make_map();
 
-        let map = make_map();
+        // Place the player inside the first room.
+        let player = Object::new(player_position.0, player_position.1, '@', colors::WHITE);
+        let npc = Object::new(map::MAP_WIDTH / 2 - 5, map::MAP_HEIGHT / 2, '@', colors::YELLOW);
+        let mut objects = [player, npc];
 
         GameState {
             objects,
@@ -59,8 +58,8 @@ impl GameState {
         }
 
         // Draw the map tiles.
-        for y in 0..MAP_HEIGHT {
-            for x in 0..MAP_WIDTH {
+        for y in 0..map::MAP_HEIGHT {
+            for x in 0..map::MAP_WIDTH {
                 let wall = self.map[x as usize][y as usize].block_sight;
                 if wall {
                     con.set_char_background(x, y, COLOR_DARK_WALL, BackgroundFlag::Set);
@@ -74,16 +73,6 @@ impl GameState {
     }
 }
 
-fn make_map() -> Map {
-    // Fill the map with "unblocked" tiles.
-    let mut map = vec![vec![Tile::empty(); MAP_HEIGHT as usize]; MAP_WIDTH as usize];
-
-    map[30][22] = Tile::wall();
-    map[50][22] = Tile::wall();
-
-    map
-}
-
 fn main() {
     let mut root = Root::initializer()
         .size(SCREEN_WIDTH, SCREEN_HEIGHT)
@@ -91,7 +80,7 @@ fn main() {
         .font("assets/arial10x10.png", tcod::FontLayout::Tcod)
         .font_type(tcod::FontType::Greyscale)
         .init();
-    let mut con = Offscreen::new(MAP_WIDTH, MAP_HEIGHT);
+    let mut con = Offscreen::new(map::MAP_WIDTH, map::MAP_HEIGHT);
 
     let mut game_state = GameState::new();
 
