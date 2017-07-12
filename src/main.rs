@@ -27,7 +27,8 @@ struct GameState {
 
 impl GameState {
     fn new() -> Self {
-        let (map, player_position) = map::make_map();
+        // let (map, player_position) = map::make_map();
+        let (map, player_position) = map::make_bsp_map();
 
         // Place the player inside the first room.
         let player = Object::new(player_position.0, player_position.1, '@', colors::WHITE);
