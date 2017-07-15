@@ -26,21 +26,32 @@ const COLOR_LIGHT_WALL: Color = Color { r: 130, g: 110, b: 50 };
 const COLOR_DARK_GROUND: Color = Color { r: 50, g: 50, b: 150 };
 const COLOR_LIGHT_GROUND: Color = Color { r: 200, g: 180, b: 50 };
 
+// Player will always be the first object.
+const PLAYER: usize = 0;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum PlayerAction {
+    TookTurn,
+    DidntTakeTurn,
+    Exit,
+}
+
 struct GameState {
-    objects: [Object; 2],
+    objects: Vec<Object>,
     map: Map,
     fov_map: FovMap,
     previous_player_pos: (i32, i32),
+    disable_fov: bool,
 }
 
 impl GameState {
     fn new() -> Self {
-        let (map, player_position) = map::make_map();
+        // Create the player.
+        let mut player = Object::new(0, 0, '@', "player", colors::WHITE, true);
+        player.alive = true;
+        let mut objects = vec![player];
+        let map = map::make_map(&mut objects);
 
-        // Place the player inside the first room.
-        let player = Object::new(player_position.0, player_position.1, '@', colors::WHITE);
-        let npc = Object::new(map::MAP_WIDTH / 2 - 5, map::MAP_HEIGHT / 2, '@', colors::YELLOW);
-        let mut objects = [player, npc];
 
         let mut fov_map = FovMap::new(map::MAP_WIDTH, map::MAP_HEIGHT);
         for y in 0..map::MAP_HEIGHT {
@@ -56,27 +67,74 @@ impl GameState {
             map,
             fov_map,
             previous_player_pos: (-1, -1),
+            disable_fov: false,
         }
     }
 
-    fn handle_keys(&mut self, key_code: KeyCode) {
-        let mut player = &mut self.objects[0];
-        self.previous_player_pos = (player.x, player.y);
+    fn is_blocked(&self, x: i32, y: i32) -> bool {
+        map::is_blocked(x, y, &self.map, &self.objects)
+    }
+
+    /// Move an object by the given amount, if the destination is not blocked.
+    fn move_object_by(&mut self, id: usize, dx: i32, dy: i32) {
+        let (x, y) = self.objects[id].pos();
+        if !self.is_blocked(x + dx, y + dy) {
+            self.objects[id].set_pos(x + dx, y + dy);
+        }
+    }
+
+    fn player_move_or_attack(&mut self, dx: i32, dy: i32) {
+        // the coordinates the player is moving to/attacking
+        let x = self.objects[PLAYER].x + dx;
+        let y = self.objects[PLAYER].y + dy;
+
+        // Try to find an attackable object there.
+        let target_id = self.objects.iter().position(|object| {
+            object.pos() == (x, y)
+        });
+
+        // Attack if target found, move otherwise.
+        if let Some(target_id) = target_id {
+            println!("The {} laughs at your puny efforts to attack!", self.objects[target_id].name);
+        } else {
+            self.move_object_by(PLAYER, dx, dy);
+        }
+    }
+
+    fn handle_keys(&mut self, key_code: KeyCode) -> PlayerAction {
+        // Don't move if the player is dead.
+        if !self.objects[PLAYER].alive {
+            return PlayerAction::DidntTakeTurn;
+        }
+
+        self.previous_player_pos = self.objects[PLAYER].pos();
         match key_code {
-            KeyCode::Left => player.move_by(-1, 0, &self.map),
-            KeyCode::Right => player.move_by(1, 0, &self.map),
-            KeyCode::Up => player.move_by(0, -1, &self.map),
-            KeyCode::Down => player.move_by(0, 1, &self.map),
-            _ => {},
+            KeyCode::Left => {
+                self.player_move_or_attack(-1, 0);
+                PlayerAction::TookTurn
+            },
+            KeyCode::Right => {
+                self.player_move_or_attack(1, 0);
+                PlayerAction::TookTurn
+            },
+            KeyCode::Up => {
+                self.player_move_or_attack(0, -1);
+                PlayerAction::TookTurn
+            },
+            KeyCode::Down => {
+                self.player_move_or_attack(0, 1);
+                PlayerAction::TookTurn
+            },
+            _ => PlayerAction::DidntTakeTurn,
         }
     }
 
     fn render_all(&mut self, root: &mut Root, con: &mut Offscreen) {
-        let fov_recompute = self.previous_player_pos != (self.objects[0].x, self.objects[0].y);
+        let fov_recompute = self.previous_player_pos != (self.objects[PLAYER].x, self.objects[PLAYER].y);
 
         if fov_recompute {
             // Recompute FOV if needed (the player moved or something).
-            let player = &self.objects[0];
+            let player = &self.objects[PLAYER];
             self.fov_map.compute_fov(player.x, player.y, TORCH_RADIUS, FOV_LIGHT_WALLS, FOV_ALGO);
 
             // Go through all tiles, and update their background color.
@@ -98,9 +156,12 @@ impl GameState {
                         // Since it's visible, explore it.
                         *explored = true;
                     }
-                    if *explored {
+                    if self.disable_fov || *explored {
                         // Show explored tiles only (any visible tile is explored already).
                         con.set_char_background(x, y, color, BackgroundFlag::Set);
+                    } else {
+                        // Clear the tile.
+                        con.set_char_background(x, y, colors::BLACK, BackgroundFlag::Set);
                     }
                 }
             }
@@ -108,7 +169,7 @@ impl GameState {
 
         // Draw all objects.
         for object in &self.objects {
-            if self.fov_map.is_in_fov(object.x, object.y) {
+            if self.disable_fov || self.fov_map.is_in_fov(object.x, object.y) {
                 object.draw(con);
             }
         }
@@ -136,13 +197,30 @@ fn main() {
             object.clear(&mut con);
         }
 
-        match root.wait_for_keypress(true) {
-            Key { code: KeyCode::Escape, .. } => break,
+        let player_action = match root.wait_for_keypress(true) {
+            Key { code: KeyCode::Escape, .. } => PlayerAction::Exit,
             Key { code: KeyCode::Enter, left_alt: true, .. } => {
                 let fullscreen = !root.is_fullscreen();
                 root.set_fullscreen(fullscreen);
+                PlayerAction::DidntTakeTurn
+            },
+            Key { code: KeyCode::Number0 , .. } => {
+                game_state.disable_fov = !game_state.disable_fov;
+                PlayerAction::DidntTakeTurn
             },
             Key { code, .. } => game_state.handle_keys(code),
+        };
+
+        if player_action == PlayerAction::Exit {
+            break;
+        }
+
+        // Let monsters take their turn.
+        if game_state.objects[PLAYER].alive && player_action != PlayerAction::DidntTakeTurn {
+            // Skip the first object, which should be the player.
+            for object in game_state.objects.iter().skip(1) {
+                println!("The {} growls!", object.name);
+            }
         }
     }
 }

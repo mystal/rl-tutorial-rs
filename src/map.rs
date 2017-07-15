@@ -1,12 +1,16 @@
 use std::cmp;
 
-use rand::{self, Rng};
+use rand::{self, Rng, ThreadRng};
+use tcod::colors;
+
+use object::Object;
 
 pub const MAP_WIDTH: i32 = 80;
 pub const MAP_HEIGHT: i32 = 45;
 pub const ROOM_MAX_SIZE: i32 = 10;
 pub const ROOM_MIN_SIZE: i32 = 6;
 pub const MAX_ROOMS: i32 = 30;
+pub const MAX_ROOM_MONSTERS: i32 = 3;
 
 // TODO: Make this a 1D Vec with coordinate accessors.
 pub type Map = Vec<Vec<Tile>>;
@@ -34,6 +38,18 @@ impl Tile {
             explored: false,
         }
     }
+}
+
+pub fn is_blocked(x: i32, y: i32, map: &Map, objects: &[Object]) -> bool {
+    // First test the map tile.
+    if map[x as usize][y as usize].blocked {
+        return true;
+    }
+
+    // Now check for any blocking objects.
+    objects.iter().any(|object| {
+        object.blocks && object.pos() == (x, y)
+    })
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -86,20 +102,20 @@ fn create_v_tunnel(y1: i32, y2: i32, x: i32, map: &mut Map) {
     }
 }
 
-pub fn make_map() -> (Map, (i32, i32)) {
+pub fn make_map(objects: &mut Vec<Object>) -> Map {
+    let mut rng = rand::thread_rng();
+
     // Fill the map with "unblocked" tiles.
     let mut map = vec![vec![Tile::wall(); MAP_HEIGHT as usize]; MAP_WIDTH as usize];
     let mut rooms = vec![];
 
-    let mut starting_position = (0, 0);
-
     for _ in 0..MAX_ROOMS {
         // Random width and height.
-        let width = rand::thread_rng().gen_range(ROOM_MIN_SIZE, ROOM_MAX_SIZE + 1);
-        let height = rand::thread_rng().gen_range(ROOM_MIN_SIZE, ROOM_MAX_SIZE + 1);
+        let width = rng.gen_range(ROOM_MIN_SIZE, ROOM_MAX_SIZE + 1);
+        let height = rng.gen_range(ROOM_MIN_SIZE, ROOM_MAX_SIZE + 1);
         // Random position without going out of the boundaries of the map.
-        let x = rand::thread_rng().gen_range(0, MAP_WIDTH - width);
-        let y = rand::thread_rng().gen_range(0, MAP_HEIGHT - height);
+        let x = rng.gen_range(0, MAP_WIDTH - width);
+        let y = rng.gen_range(0, MAP_HEIGHT - height);
 
         let new_room = Rect::new(x, y, width, height);
 
@@ -113,12 +129,15 @@ pub fn make_map() -> (Map, (i32, i32)) {
             // "Paint" it to the map's tiles.
             create_room(new_room, &mut map);
 
+            // Add some content to this room, such as monsters.
+            place_objects(new_room, &map, objects, &mut rng);
+
             // Center coordinates of the new room, will be useful later.
             let (new_x, new_y) = new_room.center();
 
             if rooms.is_empty() {
                 // This is the first room, where the player starts at.
-                starting_position = (new_x, new_y);
+                objects[0].set_pos(new_x, new_y);
             } else {
                 // All rooms after the first:
                 // Connect it to the previous room with a tunnel.
@@ -127,7 +146,7 @@ pub fn make_map() -> (Map, (i32, i32)) {
                 let (prev_x, prev_y) = rooms[rooms.len() - 1].center();
 
                 // Flip a coin (random bool value -- either true or false).
-                if rand::random() {
+                if rng.gen() {
                     // First move horizontally, then vertically.
                     create_h_tunnel(prev_x, new_x, prev_y, &mut map);
                     create_v_tunnel(prev_y, new_y, new_x, &mut map);
@@ -143,5 +162,32 @@ pub fn make_map() -> (Map, (i32, i32)) {
         }
     }
 
-    (map, starting_position)
+    map
+}
+
+fn place_objects(room: Rect, map: &Map, objects: &mut Vec<Object>, rng: &mut ThreadRng) {
+    // Choose random number of monsters.
+    let num_monsters = rng.gen_range(0, MAX_ROOM_MONSTERS + 1);
+
+    for _ in 0..num_monsters {
+        // Choose random spot for this monster.
+        let x = rng.gen_range(room.x1 + 1, room.x2);
+        let y = rng.gen_range(room.y1 + 1, room.y2);
+
+
+        // Only place it if the tile is not blocked.
+        if !is_blocked(x, y, map, objects) {
+            let orc_chance = 0.8; // 80% chance of getting an orc.
+            let mut monster = if rng.gen::<f32>() < orc_chance {
+                // Create an orc.
+                Object::new(x, y, 'o', "orc", colors::DESATURATED_GREEN, true)
+            } else {
+                // Create a troll.
+                Object::new(x, y, 'T', "troll", colors::DARKER_GREEN, true)
+            };
+            monster.alive = true;
+
+            objects.push(monster);
+        }
+    }
 }
