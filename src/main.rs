@@ -17,6 +17,9 @@ const SCREEN_WIDTH: i32 = 80;
 const SCREEN_HEIGHT: i32 = 50;
 const LIMIT_FPS: u32 = 20;
 
+const CAMERA_WIDTH: i32 = 80;
+const CAMERA_HEIGHT: i32 = 45;
+
 const FOV_ALGO: FovAlgorithm = FovAlgorithm::Basic;
 const FOV_LIGHT_WALLS: bool = true;
 const TORCH_RADIUS: i32 = 10;
@@ -40,6 +43,7 @@ struct GameState {
     objects: Vec<Object>,
     map: Map,
     fov_map: FovMap,
+    camera_pos: (i32, i32),
     previous_player_pos: (i32, i32),
     disable_fov: bool,
 }
@@ -66,6 +70,7 @@ impl GameState {
             objects,
             map,
             fov_map,
+            camera_pos: (0, 0),
             previous_player_pos: (-1, -1),
             disable_fov: false,
         }
@@ -129,19 +134,62 @@ impl GameState {
         }
     }
 
+    fn move_camera(&mut self, target_x: i32, target_y: i32) -> bool {
+        let mut fov_recompute = false;
+
+        // New camera coordinates (top-left corner of the screen relative to the map).
+        // Coordinates so that the target is at the center of the screen.
+        let mut x = target_x - CAMERA_WIDTH / 2;
+        let mut y = target_y - CAMERA_HEIGHT / 2;
+
+        // Clamp the viewport to the map edges.
+        if x < 0 {
+            x = 0;
+        } else if x > map::MAP_WIDTH - CAMERA_WIDTH - 1 {
+            x = map::MAP_WIDTH - CAMERA_WIDTH - 1;
+        }
+        if y < 0 {
+            y = 0;
+        } else if y > map::MAP_HEIGHT - CAMERA_HEIGHT - 1 {
+            y = map::MAP_HEIGHT - CAMERA_HEIGHT - 1;
+        }
+
+        if x != self.camera_pos.0 || y != self.camera_pos.1 {
+            fov_recompute = true;
+        }
+
+        self.camera_pos = (x, y);
+
+        fov_recompute
+    }
+
+    fn to_camera_coordinates(&self, x: i32, y: i32) -> Option<(i32, i32)> {
+        // Convert coordinates on the map to coordinates on the screen.
+        let (x, y) = (x - self.camera_pos.0, y - self.camera_pos.1);
+
+        // Check that the coordinates are inside the view.
+        if x < 0 || y < 0 || x >= CAMERA_WIDTH || y >= CAMERA_HEIGHT {
+            None
+        } else {
+            Some((x, y))
+        }
+    }
+
     fn render_all(&mut self, root: &mut Root, con: &mut Offscreen) {
-        let fov_recompute = self.previous_player_pos != (self.objects[PLAYER].x, self.objects[PLAYER].y);
+        let (player_x, player_y) = (self.objects[PLAYER].x, self.objects[PLAYER].y);
+        let fov_recompute = self.move_camera(player_x, player_y) ||
+            self.previous_player_pos != (player_x, player_y);
 
         if fov_recompute {
             // Recompute FOV if needed (the player moved or something).
-            let player = &self.objects[PLAYER];
-            self.fov_map.compute_fov(player.x, player.y, TORCH_RADIUS, FOV_LIGHT_WALLS, FOV_ALGO);
+            self.fov_map.compute_fov(player_x, player_y, TORCH_RADIUS, FOV_LIGHT_WALLS, FOV_ALGO);
 
             // Go through all tiles, and update their background color.
-            for y in 0..map::MAP_HEIGHT {
-                for x in 0..map::MAP_WIDTH {
-                    let visible = self.fov_map.is_in_fov(x, y);
-                    let wall = self.map[x as usize][y as usize].block_sight;
+            for y in 0..CAMERA_HEIGHT {
+                for x in 0..CAMERA_WIDTH {
+                    let (map_x, map_y) = (self.camera_pos.0 + x, self.camera_pos.1 + y);
+                    let visible = self.fov_map.is_in_fov(map_x, map_y);
+                    let wall = self.map[map_x as usize][map_y as usize].block_sight;
                     let color = match (visible, wall) {
                         // Outside of field of view:
                         (false, true) => COLOR_DARK_WALL,
@@ -151,7 +199,7 @@ impl GameState {
                         (true, false) => COLOR_LIGHT_GROUND,
                     };
 
-                    let explored = &mut self.map[x as usize][y as usize].explored;
+                    let explored = &mut self.map[map_x as usize][map_y as usize].explored;
                     if visible {
                         // Since it's visible, explore it.
                         *explored = true;
@@ -170,7 +218,10 @@ impl GameState {
         // Draw all objects.
         for object in &self.objects {
             if self.disable_fov || self.fov_map.is_in_fov(object.x, object.y) {
-                object.draw(con);
+                if let Some((x, y)) = self.to_camera_coordinates(object.x, object.y) {
+                    con.set_default_foreground(object.color);
+                    con.put_char(x, y, object.char, BackgroundFlag::None);
+                }
             }
         }
 
@@ -194,7 +245,9 @@ fn main() {
         root.flush();
 
         for object in &game_state.objects {
-            object.clear(&mut con);
+            if let Some((x, y)) = game_state.to_camera_coordinates(object.x, object.y) {
+                con.put_char(x, y, ' ', BackgroundFlag::None);
+            }
         }
 
         let player_action = match root.wait_for_keypress(true) {
