@@ -1,5 +1,5 @@
 use tcod::{BackgroundFlag, Console};
-use tcod::colors::Color;
+use tcod::colors::{self, Color};
 
 #[derive(Debug)]
 pub struct Object {
@@ -10,6 +10,8 @@ pub struct Object {
     pub name: String,
     pub blocks: bool,
     pub alive: bool,
+    pub fighter: Option<Fighter>,
+    pub ai: Option<Ai>,
 }
 
 impl Object {
@@ -22,6 +24,8 @@ impl Object {
             name: name.into(),
             blocks,
             alive: false,
+            fighter: None,
+            ai: None,
         }
     }
 
@@ -34,6 +38,43 @@ impl Object {
         self.y = y;
     }
 
+    /// Return the distance to another object.
+    pub fn distance_to(&self, other: &Object) -> f32 {
+        let dx = other.x - self.x;
+        let dy = other.y - self.y;
+        ((dx.pow(2) + dy.pow(2)) as f32).sqrt()
+    }
+
+    // TODO: Make damage a u32?
+    pub fn take_damage(&mut self, damage: i32) {
+        // Apply damage if possible.
+        if let Some(fighter) = self.fighter.as_mut() {
+            if damage > 0 {
+                fighter.hp -= damage;
+            }
+        }
+
+        // Check for death, call the death function.
+        if let Some(fighter) = self.fighter {
+            if fighter.hp <= 0 {
+                self.alive = false;
+                fighter.on_death.callback(self);
+            }
+        }
+    }
+
+    pub fn attack(&mut self, target: &mut Object) {
+        // A simple formula for attack damage.
+        let damage = self.fighter.map_or(0, |f| f.power) - target.fighter.map_or(0, |f| f.defense);
+        if damage > 0 {
+            // make the target take some damage
+            println!("{} attacks {} for {} hit points.", self.name, target.name, damage);
+            target.take_damage(damage);
+        } else {
+            println!("{} attacks {} but it has no effect!", self.name, target.name);
+        }
+    }
+
     pub fn draw(&self, con: &mut Console) {
         con.set_default_foreground(self.color);
         con.put_char(self.x, self.y, self.char, BackgroundFlag::None);
@@ -43,3 +84,54 @@ impl Object {
         con.put_char(self.x, self.y, ' ', BackgroundFlag::None);
     }
 }
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum DeathCallback {
+    Player,
+    Monster,
+}
+
+impl DeathCallback {
+    fn callback(self, object: &mut Object) {
+        use DeathCallback::*;
+        let callback: fn(&mut Object) = match self {
+            Player => player_death,
+            Monster => monster_death,
+        };
+        callback(object);
+    }
+}
+
+fn player_death(player: &mut Object) {
+    // The game ended!
+    println!("You died!");
+
+    // for added effect, transform the player into a corpse!
+    player.char = '%';
+    player.color = colors::DARK_RED;
+}
+
+fn monster_death(monster: &mut Object) {
+    // Transform it into a nasty corpse! It doesn't block, can't be
+    // attacked and doesn't move.
+    println!("{} is dead!", monster.name);
+    monster.char = '%';
+    monster.color = colors::DARK_RED;
+    monster.blocks = false;
+    monster.fighter = None;
+    monster.ai = None;
+    monster.name = format!("remains of {}", monster.name);
+}
+
+// Combat-related properties and methods (monster, player, NPC).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Fighter {
+    pub max_hp: i32,
+    pub hp: i32,
+    pub defense: i32,
+    pub power: i32,
+    pub on_death: DeathCallback,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Ai;

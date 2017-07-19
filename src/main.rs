@@ -1,13 +1,13 @@
 extern crate rand;
 extern crate tcod;
 
-use tcod::{BackgroundFlag, Console};
+use tcod::{BackgroundFlag, Console, TextAlignment};
 use tcod::colors::{self, Color};
 use tcod::console::{self, Root, Offscreen};
 use tcod::input::{Key, KeyCode};
 use tcod::map::{Map as FovMap, FovAlgorithm};
 
-use object::Object;
+use object::*;
 use map::{Map, Tile};
 
 mod map;
@@ -32,6 +32,19 @@ const COLOR_LIGHT_GROUND: Color = Color { r: 200, g: 180, b: 50 };
 // Player will always be the first object.
 const PLAYER: usize = 0;
 
+/// Mutably borrow two *separate* elements from the given slice.
+/// Panics when the indexes are equal or out of bounds.
+fn mut_two<T>(first_index: usize, second_index: usize, items: &mut [T]) -> (&mut T, &mut T) {
+    assert!(first_index != second_index);
+    let split_at_index = std::cmp::max(first_index, second_index);
+    let (first_slice, second_slice) = items.split_at_mut(split_at_index);
+    if first_index < second_index {
+        (&mut first_slice[first_index], &mut second_slice[0])
+    } else {
+        (&mut second_slice[0], &mut first_slice[second_index])
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum PlayerAction {
     TookTurn,
@@ -53,6 +66,13 @@ impl GameState {
         // Create the player.
         let mut player = Object::new(0, 0, '@', "player", colors::WHITE, true);
         player.alive = true;
+        player.fighter = Some(Fighter {
+            max_hp: 30,
+            hp: 30,
+            defense: 2,
+            power: 5,
+            on_death: DeathCallback::Player,
+        });
         let mut objects = vec![player];
         let map = map::make_map(&mut objects);
 
@@ -88,6 +108,35 @@ impl GameState {
         }
     }
 
+    fn move_towards(&mut self, id: usize, target_x: i32, target_y: i32) {
+        // vector from this object to the target, and distance
+        let dx = target_x - self.objects[id].x;
+        let dy = target_y - self.objects[id].y;
+        let distance = ((dx.pow(2) + dy.pow(2)) as f32).sqrt();
+
+        // normalize it to length 1 (preserving direction), then round it and
+        // convert to integer so the movement is restricted to the map grid
+        let dx = (dx as f32 / distance).round() as i32;
+        let dy = (dy as f32 / distance).round() as i32;
+        self.move_object_by(id, dx, dy);
+    }
+
+    fn ai_take_turn(&mut self, monster_id: usize) {
+        // A basic monster takes its turn. If you can see it, it can see you.
+        let (monster_x, monster_y) = self.objects[monster_id].pos();
+        if self.fov_map.is_in_fov(monster_x, monster_y) {
+            if self.objects[monster_id].distance_to(&self.objects[PLAYER]) >= 2.0 {
+                // Move towards player if far away.
+                let (player_x, player_y) = self.objects[PLAYER].pos();
+                self.move_towards(monster_id, player_x, player_y);
+            } else if self.objects[PLAYER].fighter.map_or(false, |f| f.hp > 0) {
+                // Close enough, attack! (if the player is still alive.)
+                let (monster, player) = mut_two(monster_id, PLAYER, &mut self.objects);
+                monster.attack(player);
+            }
+        }
+    }
+
     fn player_move_or_attack(&mut self, dx: i32, dy: i32) {
         // the coordinates the player is moving to/attacking
         let x = self.objects[PLAYER].x + dx;
@@ -95,12 +144,13 @@ impl GameState {
 
         // Try to find an attackable object there.
         let target_id = self.objects.iter().position(|object| {
-            object.pos() == (x, y)
+            object.fighter.is_some() && object.pos() == (x, y)
         });
 
         // Attack if target found, move otherwise.
         if let Some(target_id) = target_id {
-            println!("The {} laughs at your puny efforts to attack!", self.objects[target_id].name);
+            let (player, target) = mut_two(PLAYER, target_id, &mut self.objects);
+            player.attack(target);
         } else {
             self.move_object_by(PLAYER, dx, dy);
         }
@@ -215,8 +265,12 @@ impl GameState {
             }
         }
 
+        // Sort objects so that non-blocking ones come first.
+        let mut to_draw: Vec<_> = self.objects.iter().collect();
+        to_draw.sort_by(|o1, o2| o1.blocks.cmp(&o2.blocks));
+
         // Draw all objects.
-        for object in &self.objects {
+        for object in to_draw {
             if self.disable_fov || self.fov_map.is_in_fov(object.x, object.y) {
                 if let Some((x, y)) = self.to_camera_coordinates(object.x, object.y) {
                     con.set_default_foreground(object.color);
@@ -226,6 +280,12 @@ impl GameState {
         }
 
         console::blit(con, (0, 0), (SCREEN_WIDTH, SCREEN_HEIGHT), root, (0, 0), 1.0, 1.0);
+
+        // Show the player's stats.
+        if let Some(fighter) = self.objects[PLAYER].fighter {
+            root.print_ex(1, SCREEN_HEIGHT - 2, BackgroundFlag::None, TextAlignment::Left,
+                         format!("HP: {}/{} ", fighter.hp, fighter.max_hp));
+        }
     }
 }
 
@@ -271,8 +331,10 @@ fn main() {
         // Let monsters take their turn.
         if game_state.objects[PLAYER].alive && player_action != PlayerAction::DidntTakeTurn {
             // Skip the first object, which should be the player.
-            for object in game_state.objects.iter().skip(1) {
-                println!("The {} growls!", object.name);
+            for id in 0..game_state.objects.len() {
+                if game_state.objects[id].ai.is_some() {
+                    game_state.ai_take_turn(id);
+                }
             }
         }
     }

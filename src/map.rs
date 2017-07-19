@@ -3,7 +3,7 @@ use std::cmp;
 use rand::{self, Rng, ThreadRng};
 use tcod::colors;
 
-use object::Object;
+use object::*;
 
 pub const MAP_WIDTH: i32 = 100;
 pub const MAP_HEIGHT: i32 = 100;
@@ -180,10 +180,28 @@ fn place_objects(room: Rect, map: &Map, objects: &mut Vec<Object>, rng: &mut Thr
             let orc_chance = 0.8; // 80% chance of getting an orc.
             let mut monster = if rng.gen::<f32>() < orc_chance {
                 // Create an orc.
-                Object::new(x, y, 'o', "orc", colors::DESATURATED_GREEN, true)
+                let mut orc = Object::new(x, y, 'o', "orc", colors::DESATURATED_GREEN, true);
+                orc.fighter = Some(Fighter {
+                    max_hp: 10,
+                    hp: 10,
+                    defense: 0,
+                    power: 3,
+                    on_death: DeathCallback::Monster,
+                });
+                orc.ai = Some(Ai);
+                orc
             } else {
                 // Create a troll.
-                Object::new(x, y, 'T', "troll", colors::DARKER_GREEN, true)
+                let mut troll = Object::new(x, y, 'T', "troll", colors::DARKER_GREEN, true);
+                troll.fighter = Some(Fighter {
+                    max_hp: 16,
+                    hp: 16,
+                    defense: 1,
+                    power: 4,
+                    on_death: DeathCallback::Monster,
+                });
+                troll.ai = Some(Ai);
+                troll
             };
             monster.alive = true;
 
