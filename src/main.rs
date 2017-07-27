@@ -1,16 +1,20 @@
 extern crate rand;
 extern crate tcod;
 
+use std::time::{Duration, Instant};
+
 use tcod::{BackgroundFlag, Console, TextAlignment};
 use tcod::colors::{self, Color};
 use tcod::console::{self, Root, Offscreen};
-use tcod::input::{Key, KeyCode};
+use tcod::input::{self, Event, Key, KeyCode, Mouse};
 use tcod::map::{Map as FovMap, FovAlgorithm};
 
+use map::Map;
+use message::Messages;
 use object::*;
-use map::{Map, Tile};
 
 mod map;
+mod message;
 mod object;
 
 const SCREEN_WIDTH: i32 = 80;
@@ -18,7 +22,7 @@ const SCREEN_HEIGHT: i32 = 50;
 const LIMIT_FPS: u32 = 20;
 
 const CAMERA_WIDTH: i32 = 80;
-const CAMERA_HEIGHT: i32 = 45;
+const CAMERA_HEIGHT: i32 = 43;
 
 const FOV_ALGO: FovAlgorithm = FovAlgorithm::Basic;
 const FOV_LIGHT_WALLS: bool = true;
@@ -28,6 +32,15 @@ const COLOR_DARK_WALL: Color = Color { r: 0, g: 0, b: 100 };
 const COLOR_LIGHT_WALL: Color = Color { r: 130, g: 110, b: 50 };
 const COLOR_DARK_GROUND: Color = Color { r: 50, g: 50, b: 150 };
 const COLOR_LIGHT_GROUND: Color = Color { r: 200, g: 180, b: 50 };
+
+// Sizes and coordinates relevant for the GUI.
+const BAR_WIDTH: i32 = 20;
+const PANEL_HEIGHT: i32 = 7;
+const PANEL_Y: i32 = SCREEN_HEIGHT - PANEL_HEIGHT;
+
+const MSG_X: i32 = BAR_WIDTH + 2;
+const MSG_WIDTH: i32 = SCREEN_WIDTH - BAR_WIDTH - 2;
+const MSG_HEIGHT: usize = PANEL_HEIGHT as usize - 1;
 
 // Player will always be the first object.
 const PLAYER: usize = 0;
@@ -57,7 +70,9 @@ struct GameState {
     map: Map,
     fov_map: FovMap,
     camera_pos: (i32, i32),
+    messages: Messages,
     previous_player_pos: (i32, i32),
+    mouse: Mouse,
     disable_fov: bool,
 }
 
@@ -91,7 +106,9 @@ impl GameState {
             map,
             fov_map,
             camera_pos: (0, 0),
+            messages: Messages::new(MSG_HEIGHT),
             previous_player_pos: (-1, -1),
+            mouse: Default::default(),
             disable_fov: false,
         }
     }
@@ -125,14 +142,14 @@ impl GameState {
         // A basic monster takes its turn. If you can see it, it can see you.
         let (monster_x, monster_y) = self.objects[monster_id].pos();
         if self.fov_map.is_in_fov(monster_x, monster_y) {
-            if self.objects[monster_id].distance_to(&self.objects[PLAYER]) >= 2.0 {
-                // Move towards player if far away.
+            if self.objects[monster_id].distance_to(&self.objects[PLAYER]) > 1.0 {
+                // Move towards player if not adjacent.
                 let (player_x, player_y) = self.objects[PLAYER].pos();
                 self.move_towards(monster_id, player_x, player_y);
             } else if self.objects[PLAYER].fighter.map_or(false, |f| f.hp > 0) {
                 // Close enough, attack! (if the player is still alive.)
                 let (monster, player) = mut_two(monster_id, PLAYER, &mut self.objects);
-                monster.attack(player);
+                monster.attack(player, &mut self.messages);
             }
         }
     }
@@ -150,7 +167,7 @@ impl GameState {
         // Attack if target found, move otherwise.
         if let Some(target_id) = target_id {
             let (player, target) = mut_two(PLAYER, target_id, &mut self.objects);
-            player.attack(target);
+            player.attack(target, &mut self.messages);
         } else {
             self.move_object_by(PLAYER, dx, dy);
         }
@@ -225,7 +242,27 @@ impl GameState {
         }
     }
 
-    fn render_all(&mut self, root: &mut Root, con: &mut Offscreen) {
+    fn to_world_coordinates(&self, x: i32, y: i32) -> (i32, i32) {
+        // Convert coordinates on the screen to coordinates on the map.
+        (x + self.camera_pos.0, y + self.camera_pos.1)
+    }
+
+    /// Return a string with the names of all objects under the mouse.
+    fn get_names_under_mouse(&self) -> String {
+        let (x, y) = self.to_world_coordinates(self.mouse.cx as i32, self.mouse.cy as i32);
+
+        // Create a list with the names of all objects at the mouse's coordinates and in FOV.
+        let names = self.objects
+            .iter()
+            .filter(|obj| obj.pos() == (x, y) && (self.disable_fov || self.fov_map.is_in_fov(obj.x, obj.y)))
+            .map(|obj| obj.name.clone())
+            .collect::<Vec<_>>();
+
+        // Join the names, separated by commas.
+        names.join(", ")
+    }
+
+    fn render_all(&mut self, root: &mut Root, con: &mut Offscreen, panel: &mut Offscreen) {
         let (player_x, player_y) = (self.objects[PLAYER].x, self.objects[PLAYER].y);
         let fov_recompute = self.move_camera(player_x, player_y) ||
             self.previous_player_pos != (player_x, player_y);
@@ -233,34 +270,34 @@ impl GameState {
         if fov_recompute {
             // Recompute FOV if needed (the player moved or something).
             self.fov_map.compute_fov(player_x, player_y, TORCH_RADIUS, FOV_LIGHT_WALLS, FOV_ALGO);
+        }
 
-            // Go through all tiles, and update their background color.
-            for y in 0..CAMERA_HEIGHT {
-                for x in 0..CAMERA_WIDTH {
-                    let (map_x, map_y) = (self.camera_pos.0 + x, self.camera_pos.1 + y);
-                    let visible = self.fov_map.is_in_fov(map_x, map_y);
-                    let wall = self.map[map_x as usize][map_y as usize].block_sight;
-                    let color = match (visible, wall) {
-                        // Outside of field of view:
-                        (false, true) => COLOR_DARK_WALL,
-                        (false, false) => COLOR_DARK_GROUND,
-                        // Inside fov:
-                        (true, true) => COLOR_LIGHT_WALL,
-                        (true, false) => COLOR_LIGHT_GROUND,
-                    };
+        // Go through all tiles, and update their background color.
+        for y in 0..CAMERA_HEIGHT {
+            for x in 0..CAMERA_WIDTH {
+                let (map_x, map_y) = (self.camera_pos.0 + x, self.camera_pos.1 + y);
+                let visible = self.fov_map.is_in_fov(map_x, map_y);
+                let wall = self.map[map_x as usize][map_y as usize].block_sight;
+                let color = match (visible, wall) {
+                    // Outside of field of view:
+                    (false, true) => COLOR_DARK_WALL,
+                    (false, false) => COLOR_DARK_GROUND,
+                    // Inside fov:
+                    (true, true) => COLOR_LIGHT_WALL,
+                    (true, false) => COLOR_LIGHT_GROUND,
+                };
 
-                    let explored = &mut self.map[map_x as usize][map_y as usize].explored;
-                    if visible {
-                        // Since it's visible, explore it.
-                        *explored = true;
-                    }
-                    if self.disable_fov || *explored {
-                        // Show explored tiles only (any visible tile is explored already).
-                        con.set_char_background(x, y, color, BackgroundFlag::Set);
-                    } else {
-                        // Clear the tile.
-                        con.set_char_background(x, y, colors::BLACK, BackgroundFlag::Set);
-                    }
+                let explored = &mut self.map[map_x as usize][map_y as usize].explored;
+                if visible {
+                    // Since it's visible, explore it.
+                    *explored = true;
+                }
+                if self.disable_fov || *explored {
+                    // Show explored tiles only (any visible tile is explored already).
+                    con.set_char_background(x, y, color, BackgroundFlag::Set);
+                } else {
+                    // Clear the tile.
+                    con.set_char_background(x, y, colors::BLACK, BackgroundFlag::Set);
                 }
             }
         }
@@ -281,12 +318,68 @@ impl GameState {
 
         console::blit(con, (0, 0), (SCREEN_WIDTH, SCREEN_HEIGHT), root, (0, 0), 1.0, 1.0);
 
-        // Show the player's stats.
-        if let Some(fighter) = self.objects[PLAYER].fighter {
-            root.print_ex(1, SCREEN_HEIGHT - 2, BackgroundFlag::None, TextAlignment::Left,
-                         format!("HP: {}/{} ", fighter.hp, fighter.max_hp));
+        // Prepare to render the GUI panel.
+        panel.set_default_background(colors::BLACK);
+        panel.clear();
+
+        // Print the game messages, one line at a time.
+        let mut y = MSG_HEIGHT as i32;
+        for &(ref msg, color) in self.messages.iter().rev() {
+            let msg_height = panel.get_height_rect(MSG_X, y, MSG_WIDTH, 0, msg);
+            y -= msg_height;
+            if y < 0 {
+                break;
+            }
+            panel.set_default_foreground(color);
+            panel.print_rect(MSG_X, y, MSG_WIDTH, 0, msg);
         }
+
+        // Show the player's stats.
+        let hp = self.objects[PLAYER].fighter.map_or(0, |f| f.hp);
+        let max_hp = self.objects[PLAYER].fighter.map_or(0, |f| f.max_hp);
+        render_bar(panel, 1, 1, BAR_WIDTH, "HP", hp, max_hp, colors::LIGHT_RED, colors::DARKER_RED);
+
+        // Display names of objects under the mouse.
+        panel.set_default_foreground(colors::LIGHT_GREY);
+        panel.print_ex(1, 0, BackgroundFlag::None, TextAlignment::Left,
+                       self.get_names_under_mouse());
+
+        // Blit the contents of `panel` to the root console.
+        console::blit(panel, (0, 0), (SCREEN_WIDTH, PANEL_HEIGHT), root, (0, PANEL_Y), 1.0, 1.0);
     }
+}
+
+fn render_bar(panel: &mut Offscreen,
+              x: i32,
+              y: i32,
+              total_width: i32,
+              name: &str,
+              value: i32,
+              maximum: i32,
+              bar_color: Color,
+              back_color: Color)
+{
+    // Render a bar (HP, experience, etc). First calculate the width of the bar.
+    let bar_width = (value as f32 / maximum as f32 * total_width as f32) as i32;
+
+    // Render the background first.
+    panel.set_default_background(back_color);
+    panel.rect(x, y, total_width, 1, false, BackgroundFlag::Screen);
+
+    // Now render the bar on top.
+    panel.set_default_background(bar_color);
+    if bar_width > 0 {
+        panel.rect(x, y, bar_width, 1, false, BackgroundFlag::Screen);
+    }
+
+    // Finally, some centered text with the values.
+    panel.set_default_foreground(colors::WHITE);
+    panel.print_ex(x + total_width / 2, y, BackgroundFlag::None, TextAlignment::Center,
+                   &format!("{}: {}/{}", name, value, maximum));
+}
+
+fn duration_as_f64(duration: Duration) -> f64 {
+    duration.as_secs() as f64 + (duration.subsec_nanos() as f64 / 1_000_000_000.0)
 }
 
 fn main() {
@@ -297,20 +390,37 @@ fn main() {
         .font_type(tcod::FontType::Greyscale)
         .init();
     let mut con = Offscreen::new(map::MAP_WIDTH, map::MAP_HEIGHT);
+    let mut panel = Offscreen::new(SCREEN_WIDTH, PANEL_HEIGHT);
+
+    let mut key = Default::default();
 
     let mut game_state = GameState::new();
 
+    // Keep rough track of FPS.
+    let mut frames = 0u64;
+    let start_time = Instant::now();
+
+    // A warm welcoming message!
+    game_state.messages.message("Welcome stranger! Prepare to perish in the Tombs of the Ancient Kings.", colors::RED);
+
     while !root.window_closed() {
-        game_state.render_all(&mut root, &mut con);
+        match input::check_for_event(input::MOUSE | input::KEY_PRESS) {
+           Some((_, Event::Mouse(m))) => game_state.mouse = m,
+           Some((_, Event::Key(k))) => key = k,
+           _ => key = Default::default(),
+        }
+
+        game_state.render_all(&mut root, &mut con, &mut panel);
         root.flush();
 
+        // Clear all objects.
         for object in &game_state.objects {
             if let Some((x, y)) = game_state.to_camera_coordinates(object.x, object.y) {
                 con.put_char(x, y, ' ', BackgroundFlag::None);
             }
         }
 
-        let player_action = match root.wait_for_keypress(true) {
+        let player_action = match key {
             Key { code: KeyCode::Escape, .. } => PlayerAction::Exit,
             Key { code: KeyCode::Enter, left_alt: true, .. } => {
                 let fullscreen = !root.is_fullscreen();
@@ -337,5 +447,10 @@ fn main() {
                 }
             }
         }
+
+        frames += 1;
     }
+
+    let elapsed_time = start_time.elapsed();
+    println!("Average FPS: {}, Duration: {:?}, Frames: {}", frames as f64 / duration_as_f64(elapsed_time), elapsed_time, frames);
 }

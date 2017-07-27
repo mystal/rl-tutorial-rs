@@ -129,9 +129,6 @@ pub fn make_map(objects: &mut Vec<Object>) -> Map {
             // "Paint" it to the map's tiles.
             create_room(new_room, &mut map);
 
-            // Add some content to this room, such as monsters.
-            place_objects(new_room, &map, objects, &mut rng);
-
             // Center coordinates of the new room, will be useful later.
             let (new_x, new_y) = new_room.center();
 
@@ -156,6 +153,10 @@ pub fn make_map(objects: &mut Vec<Object>) -> Map {
                     create_h_tunnel(prev_x, new_x, new_y, &mut map);
                 }
             }
+
+            // Add some content to this room, such as monsters.
+            // NOTE: Do it after placing the player, so new objects don't overlap the player.
+            place_objects(new_room, &map, objects, &mut rng);
 
             // Finally, append the new room to the list.
             rooms.push(new_room);

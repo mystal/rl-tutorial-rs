@@ -1,6 +1,8 @@
 use tcod::{BackgroundFlag, Console};
 use tcod::colors::{self, Color};
 
+use message::Messages;
+
 #[derive(Debug)]
 pub struct Object {
     pub x: i32,
@@ -46,7 +48,7 @@ impl Object {
     }
 
     // TODO: Make damage a u32?
-    pub fn take_damage(&mut self, damage: i32) {
+    pub fn take_damage(&mut self, damage: i32, messages: &mut Messages) {
         // Apply damage if possible.
         if let Some(fighter) = self.fighter.as_mut() {
             if damage > 0 {
@@ -58,20 +60,20 @@ impl Object {
         if let Some(fighter) = self.fighter {
             if fighter.hp <= 0 {
                 self.alive = false;
-                fighter.on_death.callback(self);
+                fighter.on_death.callback(self, messages);
             }
         }
     }
 
-    pub fn attack(&mut self, target: &mut Object) {
+    pub fn attack(&mut self, target: &mut Object, messages: &mut Messages) {
         // A simple formula for attack damage.
         let damage = self.fighter.map_or(0, |f| f.power) - target.fighter.map_or(0, |f| f.defense);
         if damage > 0 {
             // make the target take some damage
-            println!("{} attacks {} for {} hit points.", self.name, target.name, damage);
-            target.take_damage(damage);
+            messages.message(format!("{} attacks {} for {} hit points.", self.name, target.name, damage), colors::WHITE);
+            target.take_damage(damage, messages);
         } else {
-            println!("{} attacks {} but it has no effect!", self.name, target.name);
+            messages.message(format!("{} attacks {} but it has no effect!", self.name, target.name), colors::WHITE);
         }
     }
 
@@ -92,29 +94,29 @@ pub enum DeathCallback {
 }
 
 impl DeathCallback {
-    fn callback(self, object: &mut Object) {
+    fn callback(self, object: &mut Object, messages: &mut Messages) {
         use DeathCallback::*;
-        let callback: fn(&mut Object) = match self {
+        let callback: fn(&mut Object, &mut Messages) = match self {
             Player => player_death,
             Monster => monster_death,
         };
-        callback(object);
+        callback(object, messages);
     }
 }
 
-fn player_death(player: &mut Object) {
+fn player_death(player: &mut Object, messages: &mut Messages) {
     // The game ended!
-    println!("You died!");
+    messages.message("You died!", colors::RED);
 
     // for added effect, transform the player into a corpse!
     player.char = '%';
     player.color = colors::DARK_RED;
 }
 
-fn monster_death(monster: &mut Object) {
+fn monster_death(monster: &mut Object, messages: &mut Messages) {
     // Transform it into a nasty corpse! It doesn't block, can't be
     // attacked and doesn't move.
-    println!("{} is dead!", monster.name);
+    messages.message(format!("{} is dead!", monster.name), colors::ORANGE);
     monster.char = '%';
     monster.color = colors::DARK_RED;
     monster.blocks = false;
