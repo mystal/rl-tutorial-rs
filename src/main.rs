@@ -8,6 +8,7 @@ use tcod::colors::{self, Color};
 use tcod::console::{self, Root, Offscreen};
 use tcod::input::{self, Event, Key, KeyCode, Mouse};
 use tcod::map::{Map as FovMap, FovAlgorithm};
+use tcod::pathfinding::AStar;
 
 use map::Map;
 use message::Messages;
@@ -138,14 +139,68 @@ impl GameState {
         self.move_object_by(id, dx, dy);
     }
 
+    fn move_astar(&mut self, id: usize, target_id: usize) {
+        // Create a FOV map that has the dimensions of the map.
+        let mut fov_map = FovMap::new(map::MAP_WIDTH, map::MAP_HEIGHT);
+
+        // Scan the current map each turn and set all the walls as unwalkable.
+        for y in 0..map::MAP_HEIGHT {
+            for x in 0..map::MAP_WIDTH {
+                fov_map.set(x, y,
+                            !self.map[x as usize][y as usize].block_sight,
+                            !self.map[x as usize][y as usize].blocked);
+            }
+        }
+
+        // Scan all the objects to see if there are objects that must be navigated around
+        // Check also that the object isn't self or the target (so that the start and the end points are free)
+        // The AI class handles the situation if self is next to the target so it will not use this A* function anyway
+        for (i, object) in self.objects.iter().enumerate() {
+            if object.blocks && i != id && i != target_id {
+                // Set the tile as a wall so it must be navigated around.
+                fov_map.set(object.x, object.y, true, false);
+            }
+        }
+
+        // Allocate a A* path
+        // The 1.41 is the normal diagonal cost of moving, it can be set as 0.0 if diagonal moves are prohibited
+        let ENEMIES_MOVE_DIAGONAL = false;
+        let cost = if ENEMIES_MOVE_DIAGONAL {
+            1.41
+        } else {
+            0.0
+        };
+        let mut my_path = AStar::new_from_map(fov_map, cost);
+
+        // Compute the path between self's coordinates and the target's coordinates
+        let (object_x, object_y) = (self.objects[id].x, self.objects[id].y);
+        let (target_x, target_y) = (self.objects[target_id].x, self.objects[target_id].y);
+        my_path.find((object_x, object_y), (target_x, target_y));
+
+        // Check if the path exists, and in this case, also the path is shorter than 25 tiles
+        // The path size matters if you want the monster to use alternative longer paths (for example through other rooms) if for example the player is in a corridor
+        // It makes sense to keep path size relatively low to keep the monsters from running around the map if there's an alternative path really far away
+        if !my_path.is_empty() && my_path.len() < 25 {
+            // Find the next coordinates in the computed full path.
+            if let Some((x, y)) = my_path.walk_one_step(true) {
+                // Set object's coordinates to the next path tile.
+                self.objects[id].x = x;
+                self.objects[id].y = y;
+            }
+        } else {
+            // Keep the old move function as a backup so that if there are no paths (for example another monster blocks a corridor)
+            // it will still try to move towards the player (closer to the corridor opening)
+            self.move_towards(id, target_x, target_y)
+        }
+    }
+
     fn ai_take_turn(&mut self, monster_id: usize) {
         // A basic monster takes its turn. If you can see it, it can see you.
         let (monster_x, monster_y) = self.objects[monster_id].pos();
         if self.fov_map.is_in_fov(monster_x, monster_y) {
             if self.objects[monster_id].distance_to(&self.objects[PLAYER]) > 1.0 {
                 // Move towards player if not adjacent.
-                let (player_x, player_y) = self.objects[PLAYER].pos();
-                self.move_towards(monster_id, player_x, player_y);
+                self.move_astar(monster_id, PLAYER);
             } else if self.objects[PLAYER].fighter.map_or(false, |f| f.hp > 0) {
                 // Close enough, attack! (if the player is still alive.)
                 let (monster, player) = mut_two(monster_id, PLAYER, &mut self.objects);
