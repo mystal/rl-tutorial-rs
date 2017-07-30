@@ -153,11 +153,11 @@ pub fn make_map(objects: &mut Vec<Object>) -> Map {
                     create_v_tunnel(prev_y, new_y, prev_x, &mut map);
                     create_h_tunnel(prev_x, new_x, new_y, &mut map);
                 }
-            }
 
-            // Add some content to this room, such as monsters.
-            // NOTE: Do it after placing the player, so new objects don't overlap the player.
-            place_objects(new_room, &map, objects, &mut rng);
+                // Add some content to this room, such as monsters.
+                // NOTE: No objects are placed in the player's starting room.
+                place_objects(new_room, &map, objects, &mut rng);
+            }
 
             // Finally, append the new room to the list.
             rooms.push(new_room);
