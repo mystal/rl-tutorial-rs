@@ -49,6 +49,11 @@ impl Object {
         ((dx.pow(2) + dy.pow(2)) as f32).sqrt()
     }
 
+    /// Return the distance to some coordinates.
+    pub fn distance(&self, x: i32, y: i32) -> f32 {
+        (((x - self.x).pow(2) + (y - self.y).pow(2)) as f32).sqrt()
+    }
+
     /// Heal by the given amount, without going over the maximum.
     pub fn heal(&mut self, amount: i32) {
         if let Some(ref mut fighter) = self.fighter {
@@ -147,10 +152,19 @@ pub struct Fighter {
     pub on_death: DeathCallback,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Ai;
+#[derive(Clone, Debug, PartialEq)]
+pub enum Ai {
+    Basic,
+    Confused {
+        previous_ai: Box<Ai>,
+        num_turns: i32,
+    },
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Item {
     Heal,
+    Lightning,
+    Confuse,
+    Fireball,
 }

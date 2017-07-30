@@ -190,7 +190,7 @@ fn place_objects(room: Rect, map: &Map, objects: &mut Vec<Object>, rng: &mut Thr
                     power: 3,
                     on_death: DeathCallback::Monster,
                 });
-                orc.ai = Some(Ai);
+                orc.ai = Some(Ai::Basic);
                 orc
             } else {
                 // Create a troll.
@@ -202,7 +202,7 @@ fn place_objects(room: Rect, map: &Map, objects: &mut Vec<Object>, rng: &mut Thr
                     power: 4,
                     on_death: DeathCallback::Monster,
                 });
-                troll.ai = Some(Ai);
+                troll.ai = Some(Ai::Basic);
                 troll
             };
             monster.alive = true;
@@ -219,12 +219,36 @@ fn place_objects(room: Rect, map: &Map, objects: &mut Vec<Object>, rng: &mut Thr
         let x = rng.gen_range(room.x1 + 1, room.x2);
         let y = rng.gen_range(room.y1 + 1, room.y2);
 
+        // TODO: Consider using WeightedChoice here.
+
         // Only place it if the tile is not blocked.
         if !is_blocked(x, y, map, objects) {
-            // Create a healing potion.
-            let mut object = Object::new(x, y, '!', "healing potion", colors::VIOLET, false);
-            object.item = Some(Item::Heal);
-            objects.push(object);
+            let dice = rng.gen::<f32>();
+            let item = if dice < 0.7 {
+                // Create a healing potion (70% chance).
+                let mut object = Object::new(x, y, '!', "healing potion", colors::VIOLET, false);
+                object.item = Some(Item::Heal);
+                object
+            } else if dice < 0.7 + 0.1 {
+                // Create a lightning bolt scroll (10% chance).
+                let mut object = Object::new(x, y, '#', "scroll of lightning bolt",
+                                             colors::LIGHT_YELLOW, false);
+                object.item = Some(Item::Lightning);
+                object
+            } else if dice < 0.7 + 0.1 + 0.1 {
+                // Create a fireball scroll (10% chance).
+                let mut object = Object::new(x, y, '#', "scroll of fireball",
+                                             colors::LIGHT_YELLOW, false);
+                object.item = Some(Item::Fireball);
+                object
+            } else {
+                // Create a confuse scroll (10% chance).
+                let mut object = Object::new(x, y, '#', "scroll of confusion",
+                                             colors::LIGHT_YELLOW, false);
+                object.item = Some(Item::Confuse);
+                object
+            };
+            objects.push(item);
         }
     }
 }

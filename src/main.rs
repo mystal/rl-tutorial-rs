@@ -2,8 +2,8 @@ extern crate rand;
 extern crate tcod;
 
 use std::ascii::AsciiExt;
-use std::time::Duration;
 
+use rand::Rng;
 use tcod::{BackgroundFlag, Console, TextAlignment};
 use tcod::colors::{self, Color};
 use tcod::console::{self, Root, Offscreen};
@@ -48,6 +48,12 @@ const INVENTORY_WIDTH: i32 = 50;
 
 // Item constants.
 const HEAL_AMOUNT: i32 = 4;
+const LIGHTNING_DAMAGE: i32 = 20;
+const LIGHTNING_RANGE: i32 = 5;
+const CONFUSE_RANGE: i32 = 8;
+const CONFUSE_NUM_TURNS: i32 = 10;
+const FIREBALL_RADIUS: i32 = 3;
+const FIREBALL_DAMAGE: i32 = 12;
 
 // Player will always be the first object.
 const PLAYER: usize = 0;
@@ -75,6 +81,12 @@ enum PlayerAction {
 enum UseResult {
     UsedUp,
     Cancelled,
+}
+
+struct Tcod {
+    root: Root,
+    con: Offscreen,
+    panel: Offscreen,
 }
 
 struct GameState {
@@ -131,6 +143,27 @@ impl GameState {
         map::is_blocked(x, y, &self.map, &self.objects)
     }
 
+    /// Find closest enemy, up to a maximum range, and in the player's FOV.
+    fn closest_monster(&self, max_range: i32) -> Option<usize> {
+        let mut closest_enemy = None;
+        // Start with (slightly more than) maximum range.
+        let mut closest_dist = (max_range + 1) as f32;
+
+        for (id, object) in self.objects.iter().enumerate() {
+            if (id != PLAYER) && object.fighter.is_some() && object.ai.is_some() &&
+                self.fov_map.is_in_fov(object.x, object.y) {
+                // Calculate distance between this object and the player.
+                let dist = self.objects[PLAYER].distance_to(object);
+                if dist < closest_dist {
+                    // It's closer, so remember it.
+                    closest_enemy = Some(id);
+                    closest_dist = dist;
+                }
+            }
+        }
+        closest_enemy
+    }
+
     /// Move an object by the given amount, if the destination is not blocked.
     fn move_object_by(&mut self, id: usize, dx: i32, dy: i32) {
         let (x, y) = self.objects[id].pos();
@@ -140,15 +173,18 @@ impl GameState {
     }
 
     fn move_towards(&mut self, id: usize, target_x: i32, target_y: i32) {
-        // vector from this object to the target, and distance
+        // Vector from this object to the target, and distance.
         let dx = target_x - self.objects[id].x;
         let dy = target_y - self.objects[id].y;
         let distance = ((dx.pow(2) + dy.pow(2)) as f32).sqrt();
 
-        // normalize it to length 1 (preserving direction), then round it and
-        // convert to integer so the movement is restricted to the map grid
+        // Normalize it to length 1 (preserving direction), then round it and
+        // convert to integer so the movement is restricted to the map grid.
         let dx = (dx as f32 / distance).round() as i32;
         let dy = (dy as f32 / distance).round() as i32;
+
+        // TODO: Prevent moving diagonally.
+
         self.move_object_by(id, dx, dy);
     }
 
@@ -208,6 +244,17 @@ impl GameState {
     }
 
     fn ai_take_turn(&mut self, monster_id: usize) {
+        if let Some(ai) = self.objects[monster_id].ai.take() {
+            let new_ai = match ai {
+                Ai::Basic => self.ai_basic(monster_id),
+                Ai::Confused { previous_ai, num_turns } =>
+                    self.ai_confused(monster_id, previous_ai, num_turns),
+            };
+            self.objects[monster_id].ai = Some(new_ai);
+        }
+    }
+
+    fn ai_basic(&mut self, monster_id: usize) -> Ai {
         // A basic monster takes its turn. If you can see it, it can see you.
         let (monster_x, monster_y) = self.objects[monster_id].pos();
         if self.fov_map.is_in_fov(monster_x, monster_y) {
@@ -219,6 +266,35 @@ impl GameState {
                 let (monster, player) = mut_two(monster_id, PLAYER, &mut self.objects);
                 monster.attack(player, &mut self.messages);
             }
+        }
+        Ai::Basic
+    }
+
+    fn ai_confused(&mut self, monster_id: usize, previous_ai: Box<Ai>, num_turns: i32) -> Ai {
+        if num_turns >= 0 {
+            // Still confused, so move in a random direction, and decrease the number of turns confused.
+            let possible_movements = [
+                (0, 0),
+                (1, 0),
+                (-1, 0),
+                (0, 1),
+                (0, -1),
+            ];
+            let (x, y) = *rand::thread_rng().choose(&possible_movements)
+                .expect("Confused enemy could not get a movement direction.");
+
+            self.move_object_by(monster_id, x, y);
+            Ai::Confused {
+                previous_ai: previous_ai,
+                num_turns: num_turns - 1,
+            }
+        } else {
+            // Restore the previous AI (this one will be deleted).
+            self.messages.message(
+                format!("The {} is no longer confused!", self.objects[monster_id].name),
+                colors::RED,
+            );
+            *previous_ai
         }
     }
 
@@ -255,14 +331,24 @@ impl GameState {
         }
     }
 
-    fn use_item(&mut self, inventory_id: usize) {
+    fn drop_item(&mut self, inventory_id: usize) {
+        let mut item = self.inventory.remove(inventory_id);
+        item.set_pos(self.objects[PLAYER].x, self.objects[PLAYER].y);
+        self.messages.message(format!("You dropped a {}.", item.name), colors::YELLOW);
+        self.objects.push(item);
+    }
+
+    fn use_item(&mut self, inventory_id: usize, tcod: &mut Tcod) {
         use Item::*;
         // Just call the "use_function" if it is defined.
         if let Some(item) = self.inventory[inventory_id].item {
             let on_use = match item {
                 Heal => Self::cast_heal,
+                Lightning => Self::cast_lightning,
+                Confuse => Self::cast_confuse,
+                Fireball => Self::cast_fireball,
             };
-            match on_use(self, inventory_id) {
+            match on_use(self, inventory_id, tcod) {
                 UseResult::UsedUp => {
                     // Destroy after use, unless it was cancelled for some reason.
                     self.inventory.remove(inventory_id);
@@ -277,7 +363,7 @@ impl GameState {
         }
     }
 
-    fn cast_heal(&mut self, _inventory_id: usize) -> UseResult {
+    fn cast_heal(&mut self, _inventory_id: usize, _tcod: &mut Tcod) -> UseResult {
         // Heal the player.
         if let Some(fighter) = self.objects[PLAYER].fighter {
             if fighter.hp == fighter.max_hp {
@@ -291,8 +377,80 @@ impl GameState {
         UseResult::Cancelled
     }
 
-    // TODO: I hate passing root in here, but we can clean it up later.
-    fn handle_keys(&mut self, key: Key, root: &mut Root) -> PlayerAction {
+    fn cast_lightning(&mut self, _inventory_id: usize, _tcod: &mut Tcod) -> UseResult {
+        // Find closest enemy (inside a maximum range) and damage it.
+        if let Some(monster_id) = self.closest_monster(LIGHTNING_RANGE) {
+            // Zap it!
+            self.messages.message(
+                format!("A lightning bolt strikes the {} with a loud thunder! \
+                         The damage is {} hit points.",
+                        self.objects[monster_id].name, LIGHTNING_DAMAGE),
+                colors::LIGHT_BLUE,
+            );
+            self.objects[monster_id].take_damage(LIGHTNING_DAMAGE, &mut self.messages);
+            UseResult::UsedUp
+        } else {
+            // No enemy found within maximum range.
+            self.messages.message("No enemy is close enough to strike.", colors::RED);
+            UseResult::Cancelled
+        }
+    }
+
+    fn cast_confuse(&mut self, _inventory_id: usize, tcod: &mut Tcod) -> UseResult {
+        // Ask the player for a target to confuse.
+        self.messages.message(
+            "Left-click an enemy to confuse it, or right-click to cancel.",
+            colors::LIGHT_CYAN,
+        );
+        if let Some(monster_id) = self.target_monster(tcod, Some(CONFUSE_RANGE as f32)) {
+            let old_ai = self.objects[monster_id].ai.take()
+                .unwrap_or(Ai::Basic);
+            // Replace the monster's AI with a "confused" one.
+            // After some turns it will restore the old AI
+            self.objects[monster_id].ai = Some(Ai::Confused {
+                previous_ai: Box::new(old_ai),
+                num_turns: CONFUSE_NUM_TURNS,
+            });
+            self.messages.message(
+                format!("The eyes of {} look vacant, as it starts to stumble around!",
+                        self.objects[monster_id].name),
+                colors::LIGHT_GREEN);
+            UseResult::UsedUp
+        } else {
+            UseResult::Cancelled
+        }
+    }
+
+    fn cast_fireball(&mut self, _inventory_id: usize, tcod: &mut Tcod) -> UseResult {
+        // Ask the player for a target tile to throw a fireball at.
+        self.messages.message(
+            "Left-click a target tile for the fireball, or right-click to cancel.",
+            colors::LIGHT_CYAN,
+        );
+        let (x, y) = match self.target_tile(tcod, None) {
+            Some(tile_pos) => tile_pos,
+            None => return UseResult::Cancelled,
+        };
+        self.messages.message(
+            format!("The fireball explodes, burning everything within {} tiles!", FIREBALL_RADIUS),
+            colors::ORANGE,
+        );
+
+        for obj in &mut self.objects {
+            if obj.distance(x, y) <= FIREBALL_RADIUS as f32 && obj.fighter.is_some() {
+                self.messages.message(
+                    format!("The {} gets burned for {} hit points.", obj.name, FIREBALL_DAMAGE),
+                    colors::ORANGE,
+                );
+                obj.take_damage(FIREBALL_DAMAGE, &mut self.messages);
+
+            }
+        }
+
+        UseResult::UsedUp
+    }
+
+    fn handle_keys(&mut self, key: Key, tcod: &mut Tcod) -> PlayerAction {
         // Don't move if the player is dead.
         if !self.objects[PLAYER].alive {
             return PlayerAction::DidntTakeTurn;
@@ -315,9 +473,20 @@ impl GameState {
                 let inventory_index = inventory_menu(
                     &self.inventory,
                     "Press the key next to an item to use it, or any other to cancel.\n",
-                    root);
+                    &mut tcod.root);
                 if let Some(inventory_index) = inventory_index {
-                    self.use_item(inventory_index);
+                    self.use_item(inventory_index, tcod);
+                }
+                PlayerAction::DidntTakeTurn
+            },
+            Key { printable: 'd', .. } => {
+                // Show the inventory. If an item is selected, drop it.
+                let inventory_index = inventory_menu(
+                    &self.inventory,
+                    "Press the key next to an item to drop it, or any other to cancel.\n'",
+                    &mut tcod.root);
+                if let Some(inventory_index) = inventory_index {
+                    self.drop_item(inventory_index);
                 }
                 PlayerAction::DidntTakeTurn
             },
@@ -338,6 +507,59 @@ impl GameState {
                 PlayerAction::TookTurn
             },
             _ => PlayerAction::DidntTakeTurn,
+        }
+    }
+
+    /// Return the position of a tile left-clicked in player's FOV (optionally in a
+    /// range), or None if cancelled.
+    fn target_tile(&mut self, tcod: &mut Tcod, max_range: Option<f32>) -> Option<(i32, i32)> {
+        loop {
+            // Render the screen. This erases the inventory and shows the names of
+            // objects under the mouse.
+            tcod.root.flush();
+            let event = input::check_for_event(input::KEY_PRESS | input::MOUSE)
+                .map(|e| e.1);
+            let mut key = None;
+            match event {
+                Some(Event::Mouse(m)) => self.mouse = m,
+                Some(Event::Key(k)) => key = Some(k),
+                None => {},
+            }
+            self.render_all(tcod);
+
+            let (x, y) = self.to_world_coordinates(self.mouse.cx as i32, self.mouse.cy as i32);
+
+            // Accept the target if the player clicked in FOV, and in case a range
+            // is specified, if it's in that range.
+            let in_fov = (x < map::MAP_WIDTH) && (y < map::MAP_HEIGHT) && self.fov_map.is_in_fov(x, y);
+            let in_range = max_range.map_or(
+                true, |range| self.objects[PLAYER].distance(x, y) <= range);
+            if self.mouse.lbutton_pressed && in_fov && in_range {
+                return Some((x, y));
+            }
+
+            let escape = key.map_or(false, |k| k.code == KeyCode::Escape);
+            // Cancel if the player right-clicked or pressed Escape.
+            if self.mouse.rbutton_pressed || escape {
+                return None;
+            }
+        }
+    }
+
+    /// Returns a clicked monster inside FOV up to a range, or None if right-clicked.
+    fn target_monster(&mut self, tcod: &mut Tcod, max_range: Option<f32>) -> Option<usize> {
+        loop {
+            match self.target_tile(tcod, max_range) {
+                Some((x, y)) => {
+                    // Return the first clicked monster, otherwise continue looping.
+                    for (id, obj) in self.objects.iter().enumerate() {
+                        if obj.pos() == (x, y) && obj.fighter.is_some() && id != PLAYER {
+                            return Some(id);
+                        }
+                    }
+                },
+                None => return None,
+            }
         }
     }
 
@@ -402,7 +624,7 @@ impl GameState {
         names.join(", ")
     }
 
-    fn render_all(&mut self, root: &mut Root, con: &mut Offscreen, panel: &mut Offscreen) {
+    fn render_all(&mut self, tcod: &mut Tcod) {
         let (player_x, player_y) = (self.objects[PLAYER].x, self.objects[PLAYER].y);
         let fov_recompute = self.move_camera(player_x, player_y) ||
             self.previous_player_pos != (player_x, player_y);
@@ -434,10 +656,10 @@ impl GameState {
                 }
                 if self.disable_fov || *explored {
                     // Show explored tiles only (any visible tile is explored already).
-                    con.set_char_background(x, y, color, BackgroundFlag::Set);
+                    tcod.con.set_char_background(x, y, color, BackgroundFlag::Set);
                 } else {
                     // Clear the tile.
-                    con.set_char_background(x, y, colors::BLACK, BackgroundFlag::Set);
+                    tcod.con.set_char_background(x, y, colors::BLACK, BackgroundFlag::Set);
                 }
             }
         }
@@ -450,42 +672,42 @@ impl GameState {
         for object in to_draw {
             if self.disable_fov || self.fov_map.is_in_fov(object.x, object.y) {
                 if let Some((x, y)) = self.to_camera_coordinates(object.x, object.y) {
-                    con.set_default_foreground(object.color);
-                    con.put_char(x, y, object.char, BackgroundFlag::None);
+                    tcod.con.set_default_foreground(object.color);
+                    tcod.con.put_char(x, y, object.char, BackgroundFlag::None);
                 }
             }
         }
 
-        console::blit(con, (0, 0), (SCREEN_WIDTH, SCREEN_HEIGHT), root, (0, 0), 1.0, 1.0);
+        console::blit(&tcod.con, (0, 0), (SCREEN_WIDTH, SCREEN_HEIGHT), &mut tcod.root, (0, 0), 1.0, 1.0);
 
         // Prepare to render the GUI panel.
-        panel.set_default_background(colors::BLACK);
-        panel.clear();
+        tcod.panel.set_default_background(colors::BLACK);
+        tcod.panel.clear();
 
         // Print the game messages, one line at a time.
         let mut y = MSG_HEIGHT as i32;
         for &(ref msg, color) in self.messages.iter().rev() {
-            let msg_height = panel.get_height_rect(MSG_X, y, MSG_WIDTH, 0, msg);
+            let msg_height = tcod.panel.get_height_rect(MSG_X, y, MSG_WIDTH, 0, msg);
             y -= msg_height;
             if y < 0 {
                 break;
             }
-            panel.set_default_foreground(color);
-            panel.print_rect(MSG_X, y, MSG_WIDTH, 0, msg);
+            tcod.panel.set_default_foreground(color);
+            tcod.panel.print_rect(MSG_X, y, MSG_WIDTH, 0, msg);
         }
 
         // Show the player's stats.
         let hp = self.objects[PLAYER].fighter.map_or(0, |f| f.hp);
         let max_hp = self.objects[PLAYER].fighter.map_or(0, |f| f.max_hp);
-        render_bar(panel, 1, 1, BAR_WIDTH, "HP", hp, max_hp, colors::LIGHT_RED, colors::DARKER_RED);
+        render_bar(&mut tcod.panel, 1, 1, BAR_WIDTH, "HP", hp, max_hp, colors::LIGHT_RED, colors::DARKER_RED);
 
         // Display names of objects under the mouse.
-        panel.set_default_foreground(colors::LIGHT_GREY);
-        panel.print_ex(1, 0, BackgroundFlag::None, TextAlignment::Left,
+        tcod.panel.set_default_foreground(colors::LIGHT_GREY);
+        tcod.panel.print_ex(1, 0, BackgroundFlag::None, TextAlignment::Left,
                        self.get_names_under_mouse());
 
         // Blit the contents of `panel` to the root console.
-        console::blit(panel, (0, 0), (SCREEN_WIDTH, PANEL_HEIGHT), root, (0, PANEL_Y), 1.0, 1.0);
+        console::blit(&tcod.panel, (0, 0), (SCREEN_WIDTH, PANEL_HEIGHT), &mut tcod.root, (0, PANEL_Y), 1.0, 1.0);
     }
 }
 
@@ -585,14 +807,18 @@ fn render_bar(panel: &mut Offscreen,
 fn main() {
     tcod::system::set_fps(LIMIT_FPS);
 
-    let mut root = Root::initializer()
+    let root = Root::initializer()
         .size(SCREEN_WIDTH, SCREEN_HEIGHT)
         .title("Rust libtcod tutorial")
         .font("assets/arial10x10.png", tcod::FontLayout::Tcod)
         .font_type(tcod::FontType::Greyscale)
         .init();
-    let mut con = Offscreen::new(map::MAP_WIDTH, map::MAP_HEIGHT);
-    let mut panel = Offscreen::new(SCREEN_WIDTH, PANEL_HEIGHT);
+
+    let mut tcod = Tcod {
+        root: root,
+        con: Offscreen::new(map::MAP_WIDTH, map::MAP_HEIGHT),
+        panel: Offscreen::new(SCREEN_WIDTH, PANEL_HEIGHT),
+    };
 
     let mut key = Default::default();
 
@@ -601,35 +827,35 @@ fn main() {
     // A warm welcoming message!
     game_state.messages.message("Welcome stranger! Prepare to perish in the Tombs of the Ancient Kings.", colors::RED);
 
-    while !root.window_closed() {
+    while !tcod.root.window_closed() {
         match input::check_for_event(input::MOUSE | input::KEY_PRESS) {
            Some((_, Event::Mouse(m))) => game_state.mouse = m,
            Some((_, Event::Key(k))) => key = k,
            _ => key = Default::default(),
         }
 
-        game_state.render_all(&mut root, &mut con, &mut panel);
-        root.flush();
+        game_state.render_all(&mut tcod);
+        tcod.root.flush();
 
         // Clear all objects.
         for object in &game_state.objects {
             if let Some((x, y)) = game_state.to_camera_coordinates(object.x, object.y) {
-                con.put_char(x, y, ' ', BackgroundFlag::None);
+                tcod.con.put_char(x, y, ' ', BackgroundFlag::None);
             }
         }
 
         let player_action = match key {
             Key { code: KeyCode::Escape, .. } => PlayerAction::Exit,
             Key { code: KeyCode::Enter, left_alt: true, .. } => {
-                let fullscreen = !root.is_fullscreen();
-                root.set_fullscreen(fullscreen);
+                let fullscreen = !tcod.root.is_fullscreen();
+                tcod.root.set_fullscreen(fullscreen);
                 PlayerAction::DidntTakeTurn
             },
-            Key { code: KeyCode::Number0 , .. } => {
+            Key { code: KeyCode::Number0, .. } => {
                 game_state.disable_fov = !game_state.disable_fov;
                 PlayerAction::DidntTakeTurn
             },
-            key => game_state.handle_keys(key, &mut root),
+            key => game_state.handle_keys(key, &mut tcod),
         };
 
         if player_action == PlayerAction::Exit {
