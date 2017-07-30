@@ -11,6 +11,7 @@ pub const ROOM_MAX_SIZE: i32 = 10;
 pub const ROOM_MIN_SIZE: i32 = 6;
 pub const MAX_ROOMS: i32 = 30;
 pub const MAX_ROOM_MONSTERS: i32 = 3;
+pub const MAX_ROOM_ITEMS: i32 = 2;
 
 // TODO: Make this a 1D Vec with coordinate accessors.
 pub type Map = Vec<Vec<Tile>>;
@@ -207,6 +208,23 @@ fn place_objects(room: Rect, map: &Map, objects: &mut Vec<Object>, rng: &mut Thr
             monster.alive = true;
 
             objects.push(monster);
+        }
+    }
+
+    // Choose random number of items.
+    let num_items = rng.gen_range(0, MAX_ROOM_ITEMS + 1);
+
+    for _ in 0..num_items {
+        // Choose random spot for this item.
+        let x = rng.gen_range(room.x1 + 1, room.x2);
+        let y = rng.gen_range(room.y1 + 1, room.y2);
+
+        // Only place it if the tile is not blocked.
+        if !is_blocked(x, y, map, objects) {
+            // Create a healing potion.
+            let mut object = Object::new(x, y, '!', "healing potion", colors::VIOLET, false);
+            object.item = Some(Item::Heal);
+            objects.push(object);
         }
     }
 }

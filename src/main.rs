@@ -1,7 +1,8 @@
 extern crate rand;
 extern crate tcod;
 
-use std::time::{Duration, Instant};
+use std::ascii::AsciiExt;
+use std::time::Duration;
 
 use tcod::{BackgroundFlag, Console, TextAlignment};
 use tcod::colors::{self, Color};
@@ -20,7 +21,7 @@ mod object;
 
 const SCREEN_WIDTH: i32 = 80;
 const SCREEN_HEIGHT: i32 = 50;
-const LIMIT_FPS: u32 = 20;
+const LIMIT_FPS: i32 = 20;
 
 const CAMERA_WIDTH: i32 = 80;
 const CAMERA_HEIGHT: i32 = 43;
@@ -42,6 +43,11 @@ const PANEL_Y: i32 = SCREEN_HEIGHT - PANEL_HEIGHT;
 const MSG_X: i32 = BAR_WIDTH + 2;
 const MSG_WIDTH: i32 = SCREEN_WIDTH - BAR_WIDTH - 2;
 const MSG_HEIGHT: usize = PANEL_HEIGHT as usize - 1;
+
+const INVENTORY_WIDTH: i32 = 50;
+
+// Item constants.
+const HEAL_AMOUNT: i32 = 4;
 
 // Player will always be the first object.
 const PLAYER: usize = 0;
@@ -66,10 +72,16 @@ enum PlayerAction {
     Exit,
 }
 
+enum UseResult {
+    UsedUp,
+    Cancelled,
+}
+
 struct GameState {
     objects: Vec<Object>,
     map: Map,
     fov_map: FovMap,
+    inventory: Vec<Object>,
     camera_pos: (i32, i32),
     messages: Messages,
     previous_player_pos: (i32, i32),
@@ -106,6 +118,7 @@ impl GameState {
             objects,
             map,
             fov_map,
+            inventory: Vec::new(),
             camera_pos: (0, 0),
             messages: Messages::new(MSG_HEIGHT),
             previous_player_pos: (-1, -1),
@@ -228,27 +241,99 @@ impl GameState {
         }
     }
 
-    fn handle_keys(&mut self, key_code: KeyCode) -> PlayerAction {
+    /// Add to the player's inventory and remove from the map.
+    fn pick_item_up(&mut self, object_id: usize) {
+        if self.inventory.len() >= 26 {
+            self.messages.message(
+                format!("Your inventory is full, cannot pick up {}.", self.objects[object_id].name),
+                colors::RED,
+            );
+        } else {
+            let item = self.objects.swap_remove(object_id);
+            self.messages.message(format!("You picked up a {}!", item.name), colors::GREEN);
+            self.inventory.push(item);
+        }
+    }
+
+    fn use_item(&mut self, inventory_id: usize) {
+        use Item::*;
+        // Just call the "use_function" if it is defined.
+        if let Some(item) = self.inventory[inventory_id].item {
+            let on_use = match item {
+                Heal => Self::cast_heal,
+            };
+            match on_use(self, inventory_id) {
+                UseResult::UsedUp => {
+                    // Destroy after use, unless it was cancelled for some reason.
+                    self.inventory.remove(inventory_id);
+                },
+                UseResult::Cancelled => self.messages.message("Cancelled", colors::WHITE),
+            }
+        } else {
+            self.messages.message(
+                format!("The {} cannot be used.", self.inventory[inventory_id].name),
+                colors::WHITE,
+            );
+        }
+    }
+
+    fn cast_heal(&mut self, _inventory_id: usize) -> UseResult {
+        // Heal the player.
+        if let Some(fighter) = self.objects[PLAYER].fighter {
+            if fighter.hp == fighter.max_hp {
+                self.messages.message("You are already at full health.", colors::RED);
+                return UseResult::Cancelled;
+            }
+            self.messages.message("Your wounds start to feel better!", colors::LIGHT_VIOLET);
+            self.objects[PLAYER].heal(HEAL_AMOUNT);
+            return UseResult::UsedUp;
+        }
+        UseResult::Cancelled
+    }
+
+    // TODO: I hate passing root in here, but we can clean it up later.
+    fn handle_keys(&mut self, key: Key, root: &mut Root) -> PlayerAction {
         // Don't move if the player is dead.
         if !self.objects[PLAYER].alive {
             return PlayerAction::DidntTakeTurn;
         }
 
         self.previous_player_pos = self.objects[PLAYER].pos();
-        match key_code {
-            KeyCode::Left => {
+        match key {
+            Key { printable: 'g', .. } => {
+                // Pick up an item.
+                let item_id = self.objects.iter().position(|object| {
+                    object.pos() == self.objects[PLAYER].pos() && object.item.is_some()
+                });
+                if let Some(item_id) = item_id {
+                    self.pick_item_up(item_id);
+                }
+                PlayerAction::DidntTakeTurn
+            },
+            Key { printable: 'i', .. } => {
+                // Show the inventory.
+                let inventory_index = inventory_menu(
+                    &self.inventory,
+                    "Press the key next to an item to use it, or any other to cancel.\n",
+                    root);
+                if let Some(inventory_index) = inventory_index {
+                    self.use_item(inventory_index);
+                }
+                PlayerAction::DidntTakeTurn
+            },
+            Key { code: KeyCode::Left, .. } => {
                 self.player_move_or_attack(-1, 0);
                 PlayerAction::TookTurn
             },
-            KeyCode::Right => {
+            Key { code: KeyCode::Right, .. } => {
                 self.player_move_or_attack(1, 0);
                 PlayerAction::TookTurn
             },
-            KeyCode::Up => {
+            Key { code: KeyCode::Up, .. } => {
                 self.player_move_or_attack(0, -1);
                 PlayerAction::TookTurn
             },
-            KeyCode::Down => {
+            Key { code: KeyCode::Down, .. } => {
                 self.player_move_or_attack(0, 1);
                 PlayerAction::TookTurn
             },
@@ -404,6 +489,70 @@ impl GameState {
     }
 }
 
+fn menu<T: AsRef<str>>(header: &str, options: &[T], width: i32,
+                       root: &mut Root) -> Option<usize> {
+    assert!(options.len() <= 26, "Cannot have a menu with more than 26 options.");
+
+    // Calculate total height for the header (after auto-wrap) and one line per option.
+    let header_height = root.get_height_rect(0, 0, width, SCREEN_HEIGHT, header);
+    let height = options.len() as i32 + header_height;
+
+    // Create an off-screen console that represents the menu's window.
+    let mut window = Offscreen::new(width, height);
+
+    // Print the header, with auto-wrap.
+    window.set_default_foreground(colors::WHITE);
+    window.print_rect_ex(0, 0, width, height, BackgroundFlag::None, TextAlignment::Left, header);
+
+    // Print all the options.
+    for (index, option_text) in options.iter().enumerate() {
+        let menu_letter = (b'a' + index as u8) as char;
+        let text = format!("({}) {}", menu_letter, option_text.as_ref());
+        window.print_ex(0, header_height + index as i32,
+                        BackgroundFlag::None, TextAlignment::Left, text);
+    }
+
+    // Blit the contents of "window" to the root console.
+    let x = SCREEN_WIDTH / 2 - width / 2;
+    let y = SCREEN_HEIGHT / 2 - height / 2;
+    console::blit(&mut window, (0, 0), (width, height), root, (x, y), 1.0, 0.7);
+
+    // Present the root console to the player and wait for a key-press.
+    root.flush();
+    // TODO: Include this in the main loop!
+    let key = root.wait_for_keypress(true);
+
+    // Convert the ASCII code to an index; if it corresponds to an option, return it.
+    if key.printable.is_alphabetic() {
+        let index = key.printable.to_ascii_lowercase() as usize - 'a' as usize;
+        if index < options.len() {
+            Some(index)
+        } else {
+            None
+        }
+    } else {
+        None
+    }
+}
+
+fn inventory_menu(inventory: &[Object], header: &str, root: &mut Root) -> Option<usize> {
+    // How a menu with each item of the inventory as an option.
+    let options = if inventory.len() == 0 {
+        vec!["Inventory is empty."]
+    } else {
+        inventory.iter().map(|item| item.name.as_ref()).collect()
+    };
+
+    let inventory_index = menu(header, &options, INVENTORY_WIDTH, root);
+
+    // If an item was chosen, return it.
+    if inventory.len() > 0 {
+        inventory_index
+    } else {
+        None
+    }
+}
+
 fn render_bar(panel: &mut Offscreen,
               x: i32,
               y: i32,
@@ -433,11 +582,9 @@ fn render_bar(panel: &mut Offscreen,
                    &format!("{}: {}/{}", name, value, maximum));
 }
 
-fn duration_as_f64(duration: Duration) -> f64 {
-    duration.as_secs() as f64 + (duration.subsec_nanos() as f64 / 1_000_000_000.0)
-}
-
 fn main() {
+    tcod::system::set_fps(LIMIT_FPS);
+
     let mut root = Root::initializer()
         .size(SCREEN_WIDTH, SCREEN_HEIGHT)
         .title("Rust libtcod tutorial")
@@ -450,10 +597,6 @@ fn main() {
     let mut key = Default::default();
 
     let mut game_state = GameState::new();
-
-    // Keep rough track of FPS.
-    let mut frames = 0u64;
-    let start_time = Instant::now();
 
     // A warm welcoming message!
     game_state.messages.message("Welcome stranger! Prepare to perish in the Tombs of the Ancient Kings.", colors::RED);
@@ -486,7 +629,7 @@ fn main() {
                 game_state.disable_fov = !game_state.disable_fov;
                 PlayerAction::DidntTakeTurn
             },
-            Key { code, .. } => game_state.handle_keys(code),
+            key => game_state.handle_keys(key, &mut root),
         };
 
         if player_action == PlayerAction::Exit {
@@ -502,10 +645,5 @@ fn main() {
                 }
             }
         }
-
-        frames += 1;
     }
-
-    let elapsed_time = start_time.elapsed();
-    println!("Average FPS: {}, Duration: {:?}, Frames: {}", frames as f64 / duration_as_f64(elapsed_time), elapsed_time, frames);
 }
