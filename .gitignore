@@ -4,3 +4,4 @@ target/
 savegame
 
 .DS_Store
+.vscode
