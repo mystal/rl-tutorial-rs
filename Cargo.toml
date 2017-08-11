@@ -5,4 +5,7 @@ authors = ["Gabriel Martinez <reitaka@gmail.com>"]
 
 [dependencies]
 rand = "0.3.15"
-tcod = { git = "https://github.com/mystal/tcod-rs", branch = "update_to_1.6.3" }
+serde = "1.0.11"
+serde_derive = "1.0.11"
+serde_json = "1.0.2"
+tcod = { git = "https://github.com/mystal/tcod-rs", branch = "update_to_1.6.3", features = ["serialization"] }

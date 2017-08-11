@@ -1,7 +1,14 @@
 extern crate rand;
+extern crate serde;
+#[macro_use]
+extern crate serde_derive;
+extern crate serde_json as json;
 extern crate tcod;
 
 use std::ascii::AsciiExt;
+use std::error::Error;
+use std::fs::File;
+use std::io::{Read, Write};
 
 use rand::Rng;
 use tcod::{BackgroundFlag, Console, TextAlignment};
@@ -89,15 +96,27 @@ struct Tcod {
     panel: Offscreen,
 }
 
+fn default_fov_map() -> FovMap {
+    FovMap::new(map::MAP_WIDTH, map::MAP_HEIGHT)
+}
+
+#[derive(Serialize, Deserialize)]
 struct GameState {
+    // Serialized state.
     objects: Vec<Object>,
     map: Map,
-    fov_map: FovMap,
-    inventory: Vec<Object>,
-    camera_pos: (i32, i32),
     messages: Messages,
+    inventory: Vec<Object>,
+
+    #[serde(skip, default = "default_fov_map")]
+    fov_map: FovMap,
+    #[serde(skip)]
+    camera_pos: (i32, i32),
+    #[serde(skip)]
     previous_player_pos: (i32, i32),
+    #[serde(skip)]
     mouse: Mouse,
+    #[serde(skip)]
     disable_fov: bool,
 }
 
@@ -116,8 +135,8 @@ impl GameState {
         let mut objects = vec![player];
         let map = map::make_map(&mut objects);
 
-
-        let mut fov_map = FovMap::new(map::MAP_WIDTH, map::MAP_HEIGHT);
+        // Initialize the FOV map.
+        let mut fov_map = default_fov_map();
         for y in 0..map::MAP_HEIGHT {
             for x in 0..map::MAP_WIDTH {
                 fov_map.set(x, y,
@@ -126,17 +145,48 @@ impl GameState {
             }
         }
 
+        let mut messages = Messages::new(MSG_HEIGHT);
+
+        // A warm welcoming message!
+        messages.message("Welcome stranger! Prepare to perish in the Tombs of the Ancient Kings.", colors::RED);
+
         GameState {
             objects,
             map,
-            fov_map,
+            messages,
             inventory: Vec::new(),
+
+            fov_map,
             camera_pos: (0, 0),
-            messages: Messages::new(MSG_HEIGHT),
             previous_player_pos: (-1, -1),
             mouse: Default::default(),
             disable_fov: false,
         }
+    }
+
+    fn from_save() -> Result<Self, Box<Error>> {
+        let mut json_save_state = String::new();
+        let mut file = File::open("savegame")?;
+        file.read_to_string(&mut json_save_state)?;
+        let mut result: Self = json::from_str(&json_save_state)?;
+
+        // Initialize the FOV map.
+        for y in 0..map::MAP_HEIGHT {
+            for x in 0..map::MAP_WIDTH {
+                result.fov_map.set(x, y,
+                                   !result.map[x as usize][y as usize].block_sight,
+                                   !result.map[x as usize][y as usize].blocked);
+            }
+        }
+
+        Ok(result)
+    }
+
+    fn save(&self) -> Result<(), Box<Error>> {
+        let save_data = json::to_string(self)?;
+        let mut file = File::create("savegame")?;
+        file.write_all(save_data.as_bytes())?;
+        Ok(())
     }
 
     fn is_blocked(&self, x: i32, y: i32) -> bool {
@@ -716,7 +766,11 @@ fn menu<T: AsRef<str>>(header: &str, options: &[T], width: i32,
     assert!(options.len() <= 26, "Cannot have a menu with more than 26 options.");
 
     // Calculate total height for the header (after auto-wrap) and one line per option.
-    let header_height = root.get_height_rect(0, 0, width, SCREEN_HEIGHT, header);
+    let header_height = if header.is_empty() {
+        0
+    } else {
+        root.get_height_rect(0, 0, width, SCREEN_HEIGHT, header)
+    };
     let height = options.len() as i32 + header_height;
 
     // Create an off-screen console that represents the menu's window.
@@ -804,28 +858,8 @@ fn render_bar(panel: &mut Offscreen,
                    &format!("{}: {}/{}", name, value, maximum));
 }
 
-fn main() {
-    tcod::system::set_fps(LIMIT_FPS);
-
-    let root = Root::initializer()
-        .size(SCREEN_WIDTH, SCREEN_HEIGHT)
-        .title("Rust libtcod tutorial")
-        .font("assets/arial10x10.png", tcod::FontLayout::Tcod)
-        .font_type(tcod::FontType::Greyscale)
-        .init();
-
-    let mut tcod = Tcod {
-        root: root,
-        con: Offscreen::new(map::MAP_WIDTH, map::MAP_HEIGHT),
-        panel: Offscreen::new(SCREEN_WIDTH, PANEL_HEIGHT),
-    };
-
+fn play_game(game_state: &mut GameState, tcod: &mut Tcod) {
     let mut key = Default::default();
-
-    let mut game_state = GameState::new();
-
-    // A warm welcoming message!
-    game_state.messages.message("Welcome stranger! Prepare to perish in the Tombs of the Ancient Kings.", colors::RED);
 
     while !tcod.root.window_closed() {
         match input::check_for_event(input::MOUSE | input::KEY_PRESS) {
@@ -834,7 +868,7 @@ fn main() {
            _ => key = Default::default(),
         }
 
-        game_state.render_all(&mut tcod);
+        game_state.render_all(tcod);
         tcod.root.flush();
 
         // Clear all objects.
@@ -855,10 +889,12 @@ fn main() {
                 game_state.disable_fov = !game_state.disable_fov;
                 PlayerAction::DidntTakeTurn
             },
-            key => game_state.handle_keys(key, &mut tcod),
+            key => game_state.handle_keys(key, tcod),
         };
 
         if player_action == PlayerAction::Exit {
+            game_state.save()
+                .expect("Failed to save the game.");
             break;
         }
 
@@ -872,4 +908,69 @@ fn main() {
             }
         }
     }
+}
+
+fn msgbox(text: &str, width: i32, root: &mut Root) {
+    let options: &[&str] = &[];
+    menu(text, options, width, root);
+}
+
+fn main_menu(tcod: &mut Tcod) {
+    let img = tcod::image::Image::from_file("assets/menu_background.png")
+        .ok().expect("Background image not found");
+
+    while !tcod.root.window_closed() {
+        // Show the background image, at twice the regular console resolution.
+        tcod::image::blit_2x(&img, (0, 0), (-1, -1), &mut tcod.root, (0, 0));
+
+        tcod.root.set_default_foreground(colors::LIGHT_YELLOW);
+        tcod.root.print_ex(SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2 - 4,
+                           BackgroundFlag::None, TextAlignment::Center,
+                           "TOMBS OF THE ANCIENT KINGS");
+        tcod.root.print_ex(SCREEN_WIDTH / 2, SCREEN_HEIGHT - 2,
+                           BackgroundFlag::None, TextAlignment::Center,
+                           "By Mystal");
+
+        // Show options and wait for the player's choice.
+        let choices = &["Play a new game", "Continue last game", "Quit"];
+        let choice = menu("", choices, 24, &mut tcod.root);
+
+        match choice {
+            // New game.
+            Some(0) => {
+                let mut game_state = GameState::new();
+                play_game(&mut game_state, tcod);
+            },
+            // Load game.
+            Some(1) => match GameState::from_save() {
+                Ok(mut game_state) => play_game(&mut game_state, tcod),
+                Err(_) => {
+                    msgbox("\nNo saved game to load.\n", 24, &mut tcod.root);
+                    continue;
+                }
+            },
+            // Quit.
+            Some(2) => break,
+            _ => {}
+        }
+    }
+}
+
+fn main() {
+    tcod::system::set_fps(LIMIT_FPS);
+
+    let root = Root::initializer()
+        .size(SCREEN_WIDTH, SCREEN_HEIGHT)
+        .title("Rust libtcod tutorial")
+        .font("assets/arial10x10.png", tcod::FontLayout::Tcod)
+        .font_type(tcod::FontType::Greyscale)
+        .init();
+
+    let mut tcod = Tcod {
+        root: root,
+        con: Offscreen::new(map::MAP_WIDTH, map::MAP_HEIGHT),
+        panel: Offscreen::new(SCREEN_WIDTH, PANEL_HEIGHT),
+    };
+
+    main_menu(&mut tcod);
 }

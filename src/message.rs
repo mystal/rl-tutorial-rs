@@ -2,6 +2,7 @@ use std::ops::{Deref, DerefMut};
 
 use tcod::colors::Color;
 
+#[derive(Serialize, Deserialize)]
 pub struct Messages(Vec<(String, Color)>);
 
 impl Messages {

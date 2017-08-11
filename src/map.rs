@@ -16,7 +16,7 @@ pub const MAX_ROOM_ITEMS: i32 = 2;
 // TODO: Make this a 1D Vec with coordinate accessors.
 pub type Map = Vec<Vec<Tile>>;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct Tile {
     pub blocked: bool,
     pub block_sight: bool,

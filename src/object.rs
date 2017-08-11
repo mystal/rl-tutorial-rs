@@ -3,7 +3,7 @@ use tcod::colors::{self, Color};
 
 use message::Messages;
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Object {
     pub x: i32,
     pub y: i32,
@@ -104,7 +104,7 @@ impl Object {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub enum DeathCallback {
     Player,
     Monster,
@@ -143,7 +143,7 @@ fn monster_death(monster: &mut Object, messages: &mut Messages) {
 }
 
 // Combat-related properties and methods (monster, player, NPC).
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Fighter {
     pub max_hp: i32,
     pub hp: i32,
@@ -152,7 +152,7 @@ pub struct Fighter {
     pub on_death: DeathCallback,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Ai {
     Basic,
     Confused {
@@ -161,7 +161,7 @@ pub enum Ai {
     },
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Item {
     Heal,
     Lightning,
