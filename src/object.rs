@@ -15,6 +15,8 @@ pub struct Object {
     pub fighter: Option<Fighter>,
     pub ai: Option<Ai>,
     pub item: Option<Item>,
+    pub always_visible: bool,
+    pub level: i32,
 }
 
 impl Object {
@@ -30,6 +32,8 @@ impl Object {
             fighter: None,
             ai: None,
             item: None,
+            always_visible: false,
+            level: 1,
         }
     }
 
@@ -65,7 +69,7 @@ impl Object {
     }
 
     // TODO: Make damage a u32?
-    pub fn take_damage(&mut self, damage: i32, messages: &mut Messages) {
+    pub fn take_damage(&mut self, damage: i32, messages: &mut Messages) -> Option<i32> {
         // Apply damage if possible.
         if let Some(fighter) = self.fighter.as_mut() {
             if damage > 0 {
@@ -78,17 +82,22 @@ impl Object {
             if fighter.hp <= 0 {
                 self.alive = false;
                 fighter.on_death.callback(self, messages);
+                return Some(fighter.xp);
             }
         }
+        None
     }
 
     pub fn attack(&mut self, target: &mut Object, messages: &mut Messages) {
         // A simple formula for attack damage.
         let damage = self.fighter.map_or(0, |f| f.power) - target.fighter.map_or(0, |f| f.defense);
         if damage > 0 {
-            // make the target take some damage
+            // Make the target take some damage.
             messages.message(format!("{} attacks {} for {} hit points.", self.name, target.name, damage), colors::WHITE);
-            target.take_damage(damage, messages);
+            if let Some(xp) = target.take_damage(damage, messages) {
+                // Yield experience to the player.
+                self.fighter.as_mut().unwrap().xp += xp;
+            }
         } else {
             messages.message(format!("{} attacks {} but it has no effect!", self.name, target.name), colors::WHITE);
         }
@@ -133,7 +142,10 @@ fn player_death(player: &mut Object, messages: &mut Messages) {
 fn monster_death(monster: &mut Object, messages: &mut Messages) {
     // Transform it into a nasty corpse! It doesn't block, can't be
     // attacked and doesn't move.
-    messages.message(format!("{} is dead!", monster.name), colors::ORANGE);
+    messages.message(
+        format!("{} is dead! You gain {} experience points.", monster.name, monster.fighter.unwrap().xp),
+        colors::ORANGE,
+    );
     monster.char = '%';
     monster.color = colors::DARK_RED;
     monster.blocks = false;
@@ -149,6 +161,7 @@ pub struct Fighter {
     pub hp: i32,
     pub defense: i32,
     pub power: i32,
+    pub xp: i32,
     pub on_death: DeathCallback,
 }
 

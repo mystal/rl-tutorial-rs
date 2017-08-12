@@ -10,6 +10,7 @@ impl Messages {
         Messages(Vec::with_capacity(capacity))
     }
 
+    // TODO: Rename to add
     pub fn message<T: Into<String>>(&mut self, message: T, color: Color) {
         // TODO: Consider using a VecDeque?
         // If the buffer is full, remove the first message to make room for the new one.

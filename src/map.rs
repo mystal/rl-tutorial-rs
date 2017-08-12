@@ -104,6 +104,9 @@ fn create_v_tunnel(y1: i32, y2: i32, x: i32, map: &mut Map) {
 }
 
 pub fn make_map(objects: &mut Vec<Object>) -> Map {
+    // Player is the first element, remove everything else.
+    objects.truncate(1);
+
     let mut rng = rand::thread_rng();
 
     // Fill the map with "unblocked" tiles.
@@ -164,6 +167,12 @@ pub fn make_map(objects: &mut Vec<Object>) -> Map {
         }
     }
 
+    // Create stairs at the center of the last room.
+    let (last_room_x, last_room_y) = rooms[rooms.len() - 1].center();
+    let mut stairs = Object::new(last_room_x, last_room_y, '<', "stairs", colors::WHITE, false);
+    stairs.always_visible = true;
+    objects.push(stairs);
+
     map
 }
 
@@ -188,6 +197,7 @@ fn place_objects(room: Rect, map: &Map, objects: &mut Vec<Object>, rng: &mut Thr
                     hp: 10,
                     defense: 0,
                     power: 3,
+                    xp: 35,
                     on_death: DeathCallback::Monster,
                 });
                 orc.ai = Some(Ai::Basic);
@@ -200,6 +210,7 @@ fn place_objects(room: Rect, map: &Map, objects: &mut Vec<Object>, rng: &mut Thr
                     hp: 16,
                     defense: 1,
                     power: 4,
+                    xp: 100,
                     on_death: DeathCallback::Monster,
                 });
                 troll.ai = Some(Ai::Basic);
@@ -224,7 +235,7 @@ fn place_objects(room: Rect, map: &Map, objects: &mut Vec<Object>, rng: &mut Thr
         // Only place it if the tile is not blocked.
         if !is_blocked(x, y, map, objects) {
             let dice = rng.gen::<f32>();
-            let item = if dice < 0.7 {
+            let mut item = if dice < 0.7 {
                 // Create a healing potion (70% chance).
                 let mut object = Object::new(x, y, '!', "healing potion", colors::VIOLET, false);
                 object.item = Some(Item::Heal);
@@ -248,6 +259,7 @@ fn place_objects(room: Rect, map: &Map, objects: &mut Vec<Object>, rng: &mut Thr
                 object.item = Some(Item::Confuse);
                 object
             };
+            item.always_visible = true;
             objects.push(item);
         }
     }

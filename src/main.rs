@@ -28,7 +28,7 @@ mod object;
 
 const SCREEN_WIDTH: i32 = 80;
 const SCREEN_HEIGHT: i32 = 50;
-const LIMIT_FPS: i32 = 20;
+const LIMIT_FPS: i32 = 60;
 
 const CAMERA_WIDTH: i32 = 80;
 const CAMERA_HEIGHT: i32 = 43;
@@ -61,6 +61,12 @@ const CONFUSE_RANGE: i32 = 8;
 const CONFUSE_NUM_TURNS: i32 = 10;
 const FIREBALL_RADIUS: i32 = 3;
 const FIREBALL_DAMAGE: i32 = 12;
+
+// Experience and level-ups.
+const LEVEL_UP_BASE: i32 = 200;
+const LEVEL_UP_FACTOR: i32 = 150;
+const LEVEL_SCREEN_WIDTH: i32 = 40;
+const CHARACTER_SCREEN_WIDTH: i32 = 30;
 
 // Player will always be the first object.
 const PLAYER: usize = 0;
@@ -105,8 +111,10 @@ struct GameState {
     // Serialized state.
     objects: Vec<Object>,
     map: Map,
+    // TODO: Rename to log.
     messages: Messages,
     inventory: Vec<Object>,
+    dungeon_level: u32,
 
     #[serde(skip, default = "default_fov_map")]
     fov_map: FovMap,
@@ -130,38 +138,32 @@ impl GameState {
             hp: 30,
             defense: 2,
             power: 5,
+            xp: 0,
             on_death: DeathCallback::Player,
         });
         let mut objects = vec![player];
         let map = map::make_map(&mut objects);
-
-        // Initialize the FOV map.
-        let mut fov_map = default_fov_map();
-        for y in 0..map::MAP_HEIGHT {
-            for x in 0..map::MAP_WIDTH {
-                fov_map.set(x, y,
-                            !map[x as usize][y as usize].block_sight,
-                            !map[x as usize][y as usize].blocked);
-            }
-        }
 
         let mut messages = Messages::new(MSG_HEIGHT);
 
         // A warm welcoming message!
         messages.message("Welcome stranger! Prepare to perish in the Tombs of the Ancient Kings.", colors::RED);
 
-        GameState {
+        let mut game_state = GameState {
             objects,
             map,
             messages,
             inventory: Vec::new(),
+            dungeon_level: 1,
 
-            fov_map,
+            fov_map: default_fov_map(),
             camera_pos: (0, 0),
             previous_player_pos: (-1, -1),
             mouse: Default::default(),
             disable_fov: false,
-        }
+        };
+        game_state.initialize_fov();
+        game_state
     }
 
     fn from_save() -> Result<Self, Box<Error>> {
@@ -169,16 +171,7 @@ impl GameState {
         let mut file = File::open("savegame")?;
         file.read_to_string(&mut json_save_state)?;
         let mut result: Self = json::from_str(&json_save_state)?;
-
-        // Initialize the FOV map.
-        for y in 0..map::MAP_HEIGHT {
-            for x in 0..map::MAP_WIDTH {
-                result.fov_map.set(x, y,
-                                   !result.map[x as usize][y as usize].block_sight,
-                                   !result.map[x as usize][y as usize].blocked);
-            }
-        }
-
+        result.initialize_fov();
         Ok(result)
     }
 
@@ -187,6 +180,30 @@ impl GameState {
         let mut file = File::create("savegame")?;
         file.write_all(save_data.as_bytes())?;
         Ok(())
+    }
+
+    fn initialize_fov(&mut self) {
+        // Initialize the FOV map.
+        for y in 0..map::MAP_HEIGHT {
+            for x in 0..map::MAP_WIDTH {
+                self.fov_map.set(x, y,
+                                 !self.map[x as usize][y as usize].block_sight,
+                                 !self.map[x as usize][y as usize].blocked);
+            }
+        }
+    }
+
+    /// Advance to the next level
+    fn next_level(&mut self) {
+        self.messages.message("You take a moment to rest, and recover your strength.", colors::VIOLET);
+        let heal_hp = self.objects[PLAYER].fighter.map_or(0, |f| f.max_hp / 2);
+        self.objects[PLAYER].heal(heal_hp);
+
+        self.messages.message("After a rare moment of peace, you descend deeper into \
+                               the heart of the dungeon...", colors::RED);
+        self.dungeon_level += 1;
+        self.map = map::make_map(&mut self.objects);
+        self.initialize_fov();
     }
 
     fn is_blocked(&self, x: i32, y: i32) -> bool {
@@ -212,6 +229,49 @@ impl GameState {
             }
         }
         closest_enemy
+    }
+
+    fn level_up(&mut self, tcod: &mut Tcod) {
+        let player = &mut self.objects[PLAYER];
+        let level_up_xp = LEVEL_UP_BASE + player.level * LEVEL_UP_FACTOR;
+
+        // See if the player's experience is enough to level-up.
+        if player.fighter.as_ref().map_or(0, |f| f.xp) >= level_up_xp {
+            // It is! Level up.
+            player.level += 1;
+            self.messages.message(
+                format!("Your battle skills grow stronger! You reached level {}!", player.level),
+                colors::YELLOW,
+            );
+
+            // Increase the player's stats!
+            let fighter = player.fighter.as_mut().unwrap();
+            let mut choice = None;
+            // Keep asking until a choice is made.
+            while choice.is_none() {
+                choice = menu(
+                    "Level up! Choose a stat to raise:\n",
+                    &[format!("Constitution (+20 HP, from {})", fighter.max_hp),
+                      format!("Strength (+1 attack, from {})", fighter.power),
+                      format!("Agility (+1 defense, from {})", fighter.defense)],
+                    LEVEL_SCREEN_WIDTH, &mut tcod.root,
+                );
+            };
+            fighter.xp -= level_up_xp;
+            match choice.unwrap() {
+                0 => {
+                    fighter.max_hp += 20;
+                    fighter.hp += 20;
+                }
+                1 => {
+                    fighter.power += 1;
+                }
+                2 => {
+                    fighter.defense += 1;
+                }
+                _ => unreachable!(),
+            }
+        }
     }
 
     /// Move an object by the given amount, if the destination is not blocked.
@@ -437,7 +497,9 @@ impl GameState {
                         self.objects[monster_id].name, LIGHTNING_DAMAGE),
                 colors::LIGHT_BLUE,
             );
-            self.objects[monster_id].take_damage(LIGHTNING_DAMAGE, &mut self.messages);
+            if let Some(xp) = self.objects[monster_id].take_damage(LIGHTNING_DAMAGE, &mut self.messages) {
+                self.objects[PLAYER].fighter.as_mut().unwrap().xp += xp;
+            }
             UseResult::UsedUp
         } else {
             // No enemy found within maximum range.
@@ -486,16 +548,22 @@ impl GameState {
             colors::ORANGE,
         );
 
-        for obj in &mut self.objects {
+        let mut xp_to_gain = 0;
+        for (id, obj) in self.objects.iter_mut().enumerate() {
             if obj.distance(x, y) <= FIREBALL_RADIUS as f32 && obj.fighter.is_some() {
                 self.messages.message(
                     format!("The {} gets burned for {} hit points.", obj.name, FIREBALL_DAMAGE),
                     colors::ORANGE,
                 );
-                obj.take_damage(FIREBALL_DAMAGE, &mut self.messages);
-
+                if let Some(xp) = obj.take_damage(FIREBALL_DAMAGE, &mut self.messages) {
+                    // Don't reward the player for burning themself!
+                    if id != PLAYER {
+                        xp_to_gain += xp;
+                    }
+                }
             }
         }
+        self.objects[PLAYER].fighter.as_mut().unwrap().xp += xp_to_gain;
 
         UseResult::UsedUp
     }
@@ -508,6 +576,28 @@ impl GameState {
 
         self.previous_player_pos = self.objects[PLAYER].pos();
         match key {
+            Key { printable: 'c', .. } => {
+                // Show character information.
+                let player = &self.objects[PLAYER];
+                let level = player.level;
+                let level_up_xp = LEVEL_UP_BASE + player.level * LEVEL_UP_FACTOR;
+                if let Some(fighter) = player.fighter.as_ref() {
+                    let msg = format!(
+"Character information
+
+Level: {}
+Experience: {}
+Experience to level up: {}
+
+Maximum HP: {}
+Attack: {}
+Defense: {}",
+                        level, fighter.xp, level_up_xp, fighter.max_hp, fighter.power, fighter.defense);
+                    msgbox(&msg, CHARACTER_SCREEN_WIDTH, &mut tcod.root);
+                }
+
+                PlayerAction::DidntTakeTurn
+            }
             Key { printable: 'g', .. } => {
                 // Pick up an item.
                 let item_id = self.objects.iter().position(|object| {
@@ -540,6 +630,20 @@ impl GameState {
                 }
                 PlayerAction::DidntTakeTurn
             },
+            Key { printable: '<', .. } => {
+                // Go down stairs, if the player is on them.
+                let player_on_stairs = self.objects.iter().any(|object|
+                    object.pos() == self.objects[PLAYER].pos() && object.name == "stairs"
+                );
+                if player_on_stairs {
+                    self.next_level();
+                }
+                PlayerAction::DidntTakeTurn
+            },
+            Key { printable: '.', .. } => {
+                // Simply wait a turn.
+                PlayerAction::TookTurn
+            }
             Key { code: KeyCode::Left, .. } => {
                 self.player_move_or_attack(-1, 0);
                 PlayerAction::TookTurn
@@ -664,10 +768,11 @@ impl GameState {
         let (x, y) = self.to_world_coordinates(self.mouse.cx as i32, self.mouse.cy as i32);
 
         // Create a list with the names of all objects at the mouse's coordinates and in FOV.
-        let names = self.objects
-            .iter()
-            .filter(|obj| obj.pos() == (x, y) && (self.disable_fov || self.fov_map.is_in_fov(obj.x, obj.y)))
-            .map(|obj| obj.name.clone())
+        let names = self.objects.iter()
+            .filter(|obj| obj.pos() == (x, y) &&
+                    (self.disable_fov || self.fov_map.is_in_fov(obj.x, obj.y) ||
+                     (obj.always_visible && self.map[obj.x as usize][obj.y as usize].explored)))
+            .map(|obj| obj.name.as_ref())
             .collect::<Vec<_>>();
 
         // Join the names, separated by commas.
@@ -714,17 +819,23 @@ impl GameState {
             }
         }
 
-        // Sort objects so that non-blocking ones come first.
-        let mut to_draw: Vec<_> = self.objects.iter().collect();
+        // Filter out visible objects and sort them so that non-blocking ones come first.
+        let mut to_draw: Vec<_> = if self.disable_fov {
+            self.objects.iter()
+                .collect()
+        } else {
+            self.objects.iter()
+                .filter(|obj| self.fov_map.is_in_fov(obj.x, obj.y) ||
+                        (obj.always_visible && self.map[obj.x as usize][obj.y as usize].explored))
+                .collect()
+        };
         to_draw.sort_by(|o1, o2| o1.blocks.cmp(&o2.blocks));
 
         // Draw all objects.
         for object in to_draw {
-            if self.disable_fov || self.fov_map.is_in_fov(object.x, object.y) {
-                if let Some((x, y)) = self.to_camera_coordinates(object.x, object.y) {
-                    tcod.con.set_default_foreground(object.color);
-                    tcod.con.put_char(x, y, object.char, BackgroundFlag::None);
-                }
+            if let Some((x, y)) = self.to_camera_coordinates(object.x, object.y) {
+                tcod.con.set_default_foreground(object.color);
+                tcod.con.put_char(x, y, object.char, BackgroundFlag::None);
             }
         }
 
@@ -751,10 +862,13 @@ impl GameState {
         let max_hp = self.objects[PLAYER].fighter.map_or(0, |f| f.max_hp);
         render_bar(&mut tcod.panel, 1, 1, BAR_WIDTH, "HP", hp, max_hp, colors::LIGHT_RED, colors::DARKER_RED);
 
+        tcod.panel.print_ex(1, 3, BackgroundFlag::None, TextAlignment::Left,
+                            format!("Dungeon level: {}", self.dungeon_level));
+
         // Display names of objects under the mouse.
         tcod.panel.set_default_foreground(colors::LIGHT_GREY);
         tcod.panel.print_ex(1, 0, BackgroundFlag::None, TextAlignment::Left,
-                       self.get_names_under_mouse());
+                            self.get_names_under_mouse());
 
         // Blit the contents of `panel` to the root console.
         console::blit(&tcod.panel, (0, 0), (SCREEN_WIDTH, PANEL_HEIGHT), &mut tcod.root, (0, PANEL_Y), 1.0, 1.0);
@@ -870,6 +984,9 @@ fn play_game(game_state: &mut GameState, tcod: &mut Tcod) {
 
         game_state.render_all(tcod);
         tcod.root.flush();
+
+        // Level up if needed.
+        game_state.level_up(tcod);
 
         // Clear all objects.
         for object in &game_state.objects {
