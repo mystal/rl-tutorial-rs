@@ -973,13 +973,13 @@ fn render_bar(panel: &mut Offscreen,
 }
 
 fn play_game(game_state: &mut GameState, tcod: &mut Tcod) {
-    let mut key = Default::default();
-
     while !tcod.root.window_closed() {
+        let mut key = None;
+
         match input::check_for_event(input::MOUSE | input::KEY_PRESS) {
            Some((_, Event::Mouse(m))) => game_state.mouse = m,
-           Some((_, Event::Key(k))) => key = k,
-           _ => key = Default::default(),
+           Some((_, Event::Key(k))) => key = Some(k),
+           _ => {},
         }
 
         game_state.render_all(tcod);
@@ -995,18 +995,22 @@ fn play_game(game_state: &mut GameState, tcod: &mut Tcod) {
             }
         }
 
-        let player_action = match key {
-            Key { code: KeyCode::Escape, .. } => PlayerAction::Exit,
-            Key { code: KeyCode::Enter, left_alt: true, .. } => {
-                let fullscreen = !tcod.root.is_fullscreen();
-                tcod.root.set_fullscreen(fullscreen);
-                PlayerAction::DidntTakeTurn
-            },
-            Key { code: KeyCode::Number0, .. } => {
-                game_state.disable_fov = !game_state.disable_fov;
-                PlayerAction::DidntTakeTurn
-            },
-            key => game_state.handle_keys(key, tcod),
+        let player_action = if let Some(key) = key {
+            match key {
+                Key { code: KeyCode::Escape, .. } => PlayerAction::Exit,
+                Key { code: KeyCode::Enter, left_alt: true, .. } => {
+                    let fullscreen = !tcod.root.is_fullscreen();
+                    tcod.root.set_fullscreen(fullscreen);
+                    PlayerAction::DidntTakeTurn
+                },
+                Key { code: KeyCode::Number0, .. } => {
+                    game_state.disable_fov = !game_state.disable_fov;
+                    PlayerAction::DidntTakeTurn
+                },
+                key => game_state.handle_keys(key, tcod),
+            }
+        } else {
+            PlayerAction::DidntTakeTurn
         };
 
         if player_action == PlayerAction::Exit {
