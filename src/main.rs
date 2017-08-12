@@ -630,8 +630,7 @@ Defense: {}",
                 }
                 PlayerAction::DidntTakeTurn
             },
-            // FIXME: Why is this printable character not '<'?
-            Key { printable: ',', shift: true, .. } => {
+            Key { printable: '.', shift: true, .. } => {
                 // Go down stairs, if the player is on them.
                 let player_on_stairs = self.objects.iter().any(|object|
                     object.pos() == self.objects[PLAYER].pos() && object.name == "stairs"
