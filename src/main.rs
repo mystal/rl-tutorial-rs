@@ -54,13 +54,13 @@ const MSG_HEIGHT: usize = PANEL_HEIGHT as usize - 1;
 const INVENTORY_WIDTH: i32 = 50;
 
 // Item constants.
-const HEAL_AMOUNT: i32 = 4;
-const LIGHTNING_DAMAGE: i32 = 20;
+const HEAL_AMOUNT: i32 = 40;
+const LIGHTNING_DAMAGE: i32 = 40;
 const LIGHTNING_RANGE: i32 = 5;
 const CONFUSE_RANGE: i32 = 8;
 const CONFUSE_NUM_TURNS: i32 = 10;
 const FIREBALL_RADIUS: i32 = 3;
-const FIREBALL_DAMAGE: i32 = 12;
+const FIREBALL_DAMAGE: i32 = 25;
 
 // Experience and level-ups.
 const LEVEL_UP_BASE: i32 = 200;
@@ -134,15 +134,16 @@ impl GameState {
         let mut player = Object::new(0, 0, '@', "player", colors::WHITE, true);
         player.alive = true;
         player.fighter = Some(Fighter {
-            max_hp: 30,
-            hp: 30,
-            defense: 2,
-            power: 5,
+            max_hp: 100,
+            hp: 100,
+            defense: 1,
+            power: 4,
             xp: 0,
             on_death: DeathCallback::Player,
         });
         let mut objects = vec![player];
-        let map = map::make_map(&mut objects);
+        let dungeon_level = 1;
+        let map = map::make_map(&mut objects, dungeon_level);
 
         let mut messages = Messages::new(MSG_HEIGHT);
 
@@ -154,7 +155,7 @@ impl GameState {
             map,
             messages,
             inventory: Vec::new(),
-            dungeon_level: 1,
+            dungeon_level,
 
             fov_map: default_fov_map(),
             camera_pos: (0, 0),
@@ -202,7 +203,7 @@ impl GameState {
         self.messages.message("After a rare moment of peace, you descend deeper into \
                                the heart of the dungeon...", colors::RED);
         self.dungeon_level += 1;
-        self.map = map::make_map(&mut self.objects);
+        self.map = map::make_map(&mut self.objects, self.dungeon_level);
         self.initialize_fov();
     }
 
@@ -248,6 +249,7 @@ impl GameState {
             let fighter = player.fighter.as_mut().unwrap();
             let mut choice = None;
             // Keep asking until a choice is made.
+            // FIXME: Don't re-render if an invalid choice was made.
             while choice.is_none() {
                 choice = menu(
                     "Level up! Choose a stat to raise:\n",
