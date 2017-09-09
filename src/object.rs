@@ -2,6 +2,7 @@ use tcod::{BackgroundFlag, Console};
 use tcod::colors::{self, Color};
 
 use message::Messages;
+use equipment::{/*Equipment, */Equippable};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Object {
@@ -17,6 +18,8 @@ pub struct Object {
     pub item: Option<Item>,
     pub always_visible: bool,
     pub level: i32,
+    //pub equipment: Option<Equipment>,
+    pub equippable: Option<Equippable>,
 }
 
 impl Object {
@@ -34,6 +37,8 @@ impl Object {
             item: None,
             always_visible: false,
             level: 1,
+            //equipment: None,
+            equippable: None,
         }
     }
 
@@ -56,6 +61,46 @@ impl Object {
     /// Return the distance to some coordinates.
     pub fn distance(&self, x: i32, y: i32) -> f32 {
         (((x - self.x).pow(2) + (y - self.y).pow(2)) as f32).sqrt()
+    }
+
+    /// Equip object and show a message about it.
+    pub fn equip(&mut self, messages: &mut Messages) {
+        if self.item.is_none() {
+            messages.message(format!("Can't equip {:?} because it's not an Item.", self),
+                             colors::RED);
+            return;
+        };
+
+        if let Some(ref mut equippable) = self.equippable {
+            if !equippable.equipped {
+                equippable.equipped = true;
+                messages.message(format!("Equipped {} on {}.", self.name, equippable.slot),
+                                 colors::LIGHT_GREEN);
+            }
+        } else {
+            messages.message(format!("Can't equip {:?} because it's not an Equippable.", self),
+                             colors::RED);
+        }
+    }
+
+    /// Dequip object and show a message about it.
+    pub fn dequip(&mut self, messages: &mut Messages) {
+        if self.item.is_none() {
+            messages.message(format!("Can't dequip {:?} because it's not an Item.", self),
+                             colors::RED);
+            return;
+        };
+
+        if let Some(ref mut equippable) = self.equippable {
+            if equippable.equipped {
+                equippable.equipped = false;
+                messages.message(format!("Dequipped {} from {}.", self.name, equippable.slot),
+                                 colors::LIGHT_YELLOW);
+            }
+        } else {
+            messages.message(format!("Can't dequip {:?} because it's not an Equippable.", self),
+                             colors::RED);
+        }
     }
 
     /// Heal by the given amount, without going over the maximum.
@@ -86,6 +131,12 @@ impl Object {
             }
         }
         None
+    }
+
+    pub fn power(&self) -> i32 {
+        let base_power = self.fighter.map_or(0, |f| f.power);
+        let bonus = self.get_all_equipped(game).iter().fold(0, |sum, e| sum + e.power_bonus);
+        base_power + bonus
     }
 
     pub fn attack(&mut self, target: &mut Object, messages: &mut Messages) {
@@ -180,4 +231,5 @@ pub enum Item {
     Lightning,
     Confuse,
     Fireball,
+    Equipment,
 }

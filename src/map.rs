@@ -4,6 +4,7 @@ use rand::{self, Rng, ThreadRng};
 use rand::distributions::{IndependentSample, Weighted, WeightedChoice};
 use tcod::colors;
 
+use equipment::*;
 use object::*;
 
 pub const MAP_WIDTH: i32 = 100;
@@ -271,6 +272,7 @@ fn place_objects(room: Rect, map: &Map, objects: &mut Vec<Object>, level: u32, r
     let item_chances = &mut [
         // healing potion always shows up, even if all other items have 0 chance
         Weighted {weight: 35, item: Item::Heal},
+        Weighted {weight: 1000, item: Item::Equipment},
         Weighted {weight: from_dungeon_level(&[Transition{level: 4, value: 25}], level),
                   item: Item::Lightning},
         Weighted {weight: from_dungeon_level(&[Transition{level: 6, value: 25}], level),
@@ -314,6 +316,13 @@ fn place_objects(room: Rect, map: &Map, objects: &mut Vec<Object>, level: u32, r
                     let mut object = Object::new(x, y, '#', "scroll of confusion",
                                                  colors::LIGHT_YELLOW, false);
                     object.item = Some(Item::Confuse);
+                    object
+                }
+                Item::Equipment => {
+                    // Create a sword.
+                    let mut object = Object::new(x, y, '/', "sword", colors::SKY, false);
+                    object.item = Some(Item::Equipment);
+                    object.equippable = Some(Equippable{equipped: false, slot: Slot::RightHand});
                     object
                 }
             };

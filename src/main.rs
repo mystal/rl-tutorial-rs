@@ -6,6 +6,7 @@ extern crate serde_json as json;
 extern crate tcod;
 
 use std::ascii::AsciiExt;
+use std::borrow::Cow;
 use std::error::Error;
 use std::fs::File;
 use std::io::{Read, Write};
@@ -18,10 +19,12 @@ use tcod::input::{self, Event, Key, KeyCode, Mouse};
 use tcod::map::{Map as FovMap, FovAlgorithm};
 use tcod::pathfinding::AStar;
 
+use equipment::*;
 use map::Map;
 use message::Messages;
 use object::*;
 
+mod equipment;
 mod map;
 mod message;
 mod object;
@@ -93,6 +96,7 @@ enum PlayerAction {
 
 enum UseResult {
     UsedUp,
+    UsedAndKept,
     Cancelled,
 }
 
@@ -253,9 +257,9 @@ impl GameState {
             while choice.is_none() {
                 choice = menu(
                     "Level up! Choose a stat to raise:\n",
-                    &[format!("Constitution (+20 HP, from {})", fighter.max_hp),
-                      format!("Strength (+1 attack, from {})", fighter.power),
-                      format!("Agility (+1 defense, from {})", fighter.defense)],
+                    &[Cow::Owned(format!("Constitution (+20 HP, from {})", fighter.max_hp)),
+                      Cow::Owned(format!("Strength (+1 attack, from {})", fighter.power)),
+                      Cow::Owned(format!("Agility (+1 defense, from {})", fighter.defense))],
                     LEVEL_SCREEN_WIDTH, &mut tcod.root,
                 );
             };
@@ -439,12 +443,24 @@ impl GameState {
         } else {
             let item = self.objects.swap_remove(object_id);
             self.messages.message(format!("You picked up a {}!", item.name), colors::GREEN);
+            let index = self.inventory.len();
+            let slot = item.equippable.map(|e| e.slot);
             self.inventory.push(item);
+
+            // Automatically equip, if the corresponding equipment slot is unused.
+            if let Some(slot) = slot {
+                if self.get_equipped_in_slot(slot).is_none() {
+                    self.inventory[index].equip(&mut self.messages);
+                }
+            }
         }
     }
 
     fn drop_item(&mut self, inventory_id: usize) {
         let mut item = self.inventory.remove(inventory_id);
+        if item.equippable.is_some() {
+            item.dequip(&mut self.messages);
+        }
         item.set_pos(self.objects[PLAYER].x, self.objects[PLAYER].y);
         self.messages.message(format!("You dropped a {}.", item.name), colors::YELLOW);
         self.objects.push(item);
@@ -459,12 +475,14 @@ impl GameState {
                 Lightning => Self::cast_lightning,
                 Confuse => Self::cast_confuse,
                 Fireball => Self::cast_fireball,
+                Equipment => Self::toggle_equipment,
             };
             match on_use(self, inventory_id, tcod) {
                 UseResult::UsedUp => {
                     // Destroy after use, unless it was cancelled for some reason.
                     self.inventory.remove(inventory_id);
                 },
+                UseResult::UsedAndKept => {},
                 UseResult::Cancelled => self.messages.message("Cancelled", colors::WHITE),
             }
         } else {
@@ -568,6 +586,34 @@ impl GameState {
         self.objects[PLAYER].fighter.as_mut().unwrap().xp += xp_to_gain;
 
         UseResult::UsedUp
+    }
+
+    fn toggle_equipment(&mut self, inventory_id: usize, _tcod: &mut Tcod) -> UseResult {
+        let equippable = match self.inventory[inventory_id].equippable {
+            Some(equippable) => equippable,
+            None => return UseResult::Cancelled,
+        };
+
+        if equippable.equipped {
+            self.inventory[inventory_id].dequip(&mut self.messages);
+        } else {
+            // If the slot is already being used, dequip whatever is there first.
+            if let Some(old_equippable) = self.get_equipped_in_slot(equippable.slot) {
+                self.inventory[old_equippable].dequip(&mut self.messages);
+            }
+
+            self.inventory[inventory_id].equip(&mut self.messages);
+        }
+        UseResult::UsedAndKept
+    }
+
+    fn get_equipped_in_slot(&self, slot: Slot) -> Option<usize> {
+        for (inventory_id, item) in self.inventory.iter().enumerate() {
+            if item.equippable.as_ref().map_or(false, |e| e.equipped && e.slot == slot) {
+                return Some(inventory_id)
+            }
+        }
+        None
     }
 
     fn handle_keys(&mut self, key: Key, tcod: &mut Tcod) -> PlayerAction {
@@ -877,8 +923,7 @@ Defense: {}",
     }
 }
 
-fn menu<T: AsRef<str>>(header: &str, options: &[T], width: i32,
-                       root: &mut Root) -> Option<usize> {
+fn menu(header: &str, options: &[Cow<str>], width: i32, root: &mut Root) -> Option<usize> {
     assert!(options.len() <= 26, "Cannot have a menu with more than 26 options.");
 
     // Calculate total height for the header (after auto-wrap) and one line per option.
@@ -930,9 +975,17 @@ fn menu<T: AsRef<str>>(header: &str, options: &[T], width: i32,
 fn inventory_menu(inventory: &[Object], header: &str, root: &mut Root) -> Option<usize> {
     // How a menu with each item of the inventory as an option.
     let options = if inventory.len() == 0 {
-        vec!["Inventory is empty."]
+        vec![Cow::Borrowed("Inventory is empty.")]
     } else {
-        inventory.iter().map(|item| item.name.as_ref()).collect()
+        inventory.iter().map(|item| {
+            // Show additional information, in case it's equipped.
+            match item.equippable {
+                Some(equippable) if equippable.equipped => {
+                    Cow::Owned(format!("{} (on {})", item.name, equippable.slot))
+                }
+                _ => Cow::Borrowed(item.name.as_ref())
+            }
+        }).collect()
     };
 
     let inventory_index = menu(header, &options, INVENTORY_WIDTH, root);
@@ -1034,7 +1087,7 @@ fn play_game(game_state: &mut GameState, tcod: &mut Tcod) {
 }
 
 fn msgbox(text: &str, width: i32, root: &mut Root) {
-    let options: &[&str] = &[];
+    let options: &[Cow<str>] = &[];
     menu(text, options, width, root);
 }
 
@@ -1055,7 +1108,11 @@ fn main_menu(tcod: &mut Tcod) {
                            "By Mystal");
 
         // Show options and wait for the player's choice.
-        let choices = &["Play a new game", "Continue last game", "Quit"];
+        let choices = &[
+            Cow::Borrowed("Play a new game"),
+            Cow::Borrowed("Continue last game"),
+            Cow::Borrowed("Quit"),
+        ];
         let choice = menu("", choices, 24, &mut tcod.root);
 
         match choice {
